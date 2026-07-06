@@ -20,14 +20,6 @@ We will acknowledge your report within **5 business days** and work with you to 
 
 This policy applies to the [transcend-0/VibeQuant](https://github.com/transcend-0/VibeQuant) repository.
 
-## No live or paper trading
-
-VibeQuant is a research tool. The pre-run risk gate (`src/risk.py`) refuses
-`mode: live` and `mode: paper` outright — every run executes as a backtest
-against historical data. There is no broker integration and no order
-execution path. If you find a way to bypass this gate, please report it as a
-vulnerability rather than opening a public issue.
-
 ## Data fetching
 
 Market data loaders (`src/data_sources/`) call free, keyless public endpoints
