@@ -1,0 +1,94 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please fill out the sections below.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened? What did you expect to happen?
+      placeholder: |
+        **What happened:**
+        `vq run tasks/factor_etf_demo.yaml` crashed with a KeyError.
+
+        **What I expected:**
+        The run should complete and produce a report under workspace/runs/.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this?
+      placeholder: |
+        1. Run `vq ask "5/20 MA cross on 510300, 2021-01-01 to 2024-12-31"`
+        2. Wait for the backtest to complete
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error Logs
+      description: Paste any error messages or stack traces
+      render: shell
+
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Interface
+      description: How are you using VibeQuant?
+      options:
+        - CLI (vq)
+        - Web UI (vq ui)
+        - Python API
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Research Mode
+      description: Which mode were you using, if applicable?
+      options:
+        - Factor Research
+        - Strategy Research
+        - Signal Deployment
+        - Data ingestion (idea/paper/URL)
+        - Not applicable
+
+  - type: input
+    id: market
+    attributes:
+      label: Market / Data Source
+      description: Which market and data source were you using?
+      placeholder: "e.g., A-share ETF via eastmoney, US via yahoo, crypto via OKX"
+
+  - type: input
+    id: llm
+    attributes:
+      label: LLM Configuration
+      description: Are you running with an LLM configured (config/llm.yaml), or the keyword-rule fallback?
+      placeholder: "e.g., gpt-5-mini via OpenAI-compatible endpoint, or no LLM configured"
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / Commit
+      description: "Run `pip show vibequant` or paste the commit hash"
+      placeholder: "e.g., 0.1.0 or commit d346938"
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS and Python version
+      placeholder: "e.g., Ubuntu 22.04 / Python 3.11"

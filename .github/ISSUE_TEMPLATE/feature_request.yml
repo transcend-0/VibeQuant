@@ -1,0 +1,63 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your idea! Please describe what you'd like.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Motivation
+      description: What problem does this solve? Why do you need it?
+      placeholder: |
+        I often want to compare a factor's IC across multiple universes,
+        but currently I have to run each universe separately.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How would you like it to work?
+      placeholder: |
+        Add a `vq factor compare` command that takes a factor expression
+        and multiple universes, and prints a side-by-side IC/ICIR table.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the project does this affect?
+      options:
+        - Factor Research (expressions, neutralization, IC/ICIR)
+        - Strategy Research (templates, backtests, reports)
+        - Data Sources (new market, new fallback provider)
+        - Validation (permutation test, sub-period consistency)
+        - Signal Deployment (scheduler, email)
+        - CLI
+        - Web UI
+        - akquant adapters
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any other approaches you've thought about?
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I'm willing to submit a PR for this feature
