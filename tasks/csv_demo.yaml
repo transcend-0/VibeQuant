@@ -1,0 +1,18 @@
+# Backtest over local CSV bars (see data/sample/DEMO.csv).
+# Run:  vq run tasks/csv_demo.yaml
+name: csv-momentum-demo
+intent: "20-day momentum on local CSV data"
+data:
+  source: csv
+  path: data/sample
+  symbols: [DEMO]
+strategy:
+  name: momentum
+  params:
+    lookback: 20
+    threshold: 0.02
+execution:
+  mode: backtest
+  initial_cash: 1000000
+report:
+  language: en

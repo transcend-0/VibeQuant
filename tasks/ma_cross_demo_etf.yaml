@@ -1,0 +1,14 @@
+# MA cross on a real ETF — deployable for daily signals:
+#   vq deploy add tasks/ma_cross_demo_etf.yaml --email you@example.com
+name: ma-cross-510300
+kind: strategy
+intent: "5/20 MA crossover on 沪深300ETF"
+data:
+  source: etf
+  symbols: [510300]
+  start: "2022-01-01"
+strategy:
+  name: ma_cross
+  params: { fast: 5, slow: 20 }
+report:
+  language: zh

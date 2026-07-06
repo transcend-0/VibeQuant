@@ -1,0 +1,19 @@
+# Factor research over a small A-share ETF universe (real data, cached).
+# Run:  vq run tasks/factor_etf_demo.yaml
+name: etf-factor-demo
+kind: factor
+intent: "momentum vs reversal factors on an A-share ETF universe"
+data:
+  source: etf
+  symbols: [510300, 510500, 512880, 512690, 159915, 159949, 512480, 515790]
+  start: "2021-01-01"
+  end: "2024-12-31"
+factor:
+  expressions:
+    - "Mom20 = Delta(Close, 20) / Delay(Close, 20)"
+    - "Rev5 = -Delta(Close, 5) / Delay(Close, 5)"
+    - "VolAdjMom = (Delta(Close, 20) / Delay(Close, 20)) / (Ts_Std(Close, 20) / Ts_Mean(Close, 20))"
+  forward_days: 5
+  quantiles: 4
+report:
+  language: zh

@@ -1,0 +1,1346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VibeQuant</title>
+<style>
+:root {
+  --surface-0: #f4f4f2; --surface-1: #fcfcfb;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #8a8984;
+  --border: #e3e2dd; --series-1: #2a78d6; --series-2: #1baf7a; --series-ls: #e34948;
+  --good: #008300; --serious: #c0392b; --warn-bg: #fdf6e3;
+  --accent: #2a78d6; --accent-ink: #ffffff;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface-0: #111110; --surface-1: #1a1a19;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #85847c;
+    --border: #33332f; --series-1: #3987e5; --series-2: #199e70; --series-ls: #e66767;
+    --good: #35a835; --serious: #e66767; --warn-bg: #2a2618;
+    --accent: #3987e5; --accent-ink: #ffffff;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--surface-0); color: var(--text-primary);
+  font: 15px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 12px 22px;
+  background: var(--surface-1); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+header h1 { font-size: 18px; margin: 0; }
+header .spacer { flex: 1; }
+.modes { display: flex; gap: 4px; background: var(--surface-0);
+  border: 1px solid var(--border); border-radius: 10px; padding: 3px; flex-wrap: wrap; }
+.modes button { border: none; background: transparent; border-radius: 7px;
+  padding: 6px 14px; font-weight: 600; color: var(--text-secondary); }
+.modes button.active { background: var(--accent); color: var(--accent-ink); }
+button { font: inherit; border: 1px solid var(--border); background: var(--surface-1);
+  color: var(--text-primary); border-radius: 8px; padding: 7px 14px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.danger:hover { border-color: var(--serious); color: var(--serious); }
+button:disabled { opacity: .5; cursor: wait; }
+button.back { font-weight: 600; }
+main { padding: 18px 22px; max-width: 1560px; margin: 0 auto; }
+.cols { display: grid; grid-template-columns: minmax(380px, 480px) 1fr; gap: 18px; }
+@media (max-width: 1020px) { .cols { grid-template-columns: 1fr; } }
+.card { background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 12px; padding: 16px 18px; margin-bottom: 18px; }
+.card h2 { font-size: 13.5px; margin: 0 0 10px; color: var(--text-secondary);
+  text-transform: uppercase; letter-spacing: .6px; }
+textarea, input, select {
+  width: 100%; font: inherit; color: var(--text-primary);
+  background: var(--surface-0); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; }
+textarea { resize: vertical; }
+textarea.code { font-family: var(--mono); font-size: 13px; white-space: pre; }
+#sourceInput { min-height: 64px; }
+#yamlEdit { min-height: 230px; }
+#factorExprs { min-height: 88px; font-family: var(--mono); font-size: 13px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
+.chips button { font-size: 12.5px; padding: 4px 10px; border-radius: 999px;
+  color: var(--text-secondary); }
+.chips button.sel { border-color: var(--accent); color: var(--accent); }
+.row { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 8px; }
+label.small { font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 2px; }
+.note { background: var(--warn-bg); border-radius: 8px; padding: 8px 12px;
+  font-size: 13px; margin: 6px 0; color: var(--text-secondary); }
+ol.plan { margin: 4px 0 0; padding-left: 20px; color: var(--text-secondary); font-size: 13.5px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 10px; }
+.tile { background: var(--surface-0); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 12px; }
+.tile .v { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.tile .l { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.tile .v.pos { color: var(--good); } .tile .v.neg { color: var(--serious); }
+.riskline { font-size: 13.5px; margin: 4px 0; }
+.riskline.flag { color: var(--serious); } .riskline.warn { color: var(--text-secondary); }
+.badge { display: inline-block; font-size: 12px; border-radius: 999px; padding: 2px 10px;
+  border: 1px solid var(--border); color: var(--text-secondary); }
+.badge.pass { color: var(--good); border-color: var(--good); }
+.badge.flag { color: var(--serious); border-color: var(--serious); }
+.badge.kind { text-transform: uppercase; letter-spacing: .5px; }
+.badge.on { color: var(--good); border-color: var(--good); }
+.badge.off { color: var(--text-muted); }
+.suggestion { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+  margin: 8px 0; cursor: pointer; }
+.suggestion:hover { border-color: var(--accent); }
+.suggestion .t { font-weight: 600; }
+.suggestion .m { font-size: 12.5px; color: var(--text-muted); margin-top: 2px; }
+.chartwrap { position: relative; margin-top: 6px; }
+.tooltip { position: absolute; pointer-events: none; display: none;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 10px; font-size: 12.5px; box-shadow: 0 4px 14px rgba(0,0,0,.12);
+  white-space: nowrap; z-index: 3; }
+.tooltip .t { color: var(--text-muted); }
+svg text { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 6px 2px 0; font-size: 12.5px;
+  color: var(--text-secondary); }
+.legend .sw, .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+  margin-right: 5px; vertical-align: -1px; }
+iframe.reportframe { width: 100%; height: 76vh; border: 1px solid var(--border);
+  border-radius: 10px; background: #fff; }
+.report { font-size: 14px; }
+.report table { border-collapse: collapse; margin: 8px 0; width: 100%; }
+.report th, .report td { border: 1px solid var(--border); padding: 5px 9px; text-align: left;
+  font-variant-numeric: tabular-nums; font-size: 13px; }
+.report th { color: var(--text-secondary); font-weight: 600; background: var(--surface-0); }
+.report h1 { font-size: 18px; } .report h2 { font-size: 15px; margin: 14px 0 6px;
+  color: var(--text-secondary); }
+table.stats, table.list { border-collapse: collapse; width: 100%; font-size: 13px;
+  font-variant-numeric: tabular-nums; }
+table.stats th, table.stats td, table.list th, table.list td {
+  border-bottom: 1px solid var(--border); padding: 6px 8px; text-align: right; }
+table.stats th:first-child, table.stats td:first-child,
+table.list th:first-child, table.list td:first-child { text-align: left; }
+table.list th:nth-child(2), table.list td:nth-child(2) { text-align: left; }
+table.stats th, table.list th { color: var(--text-muted); font-weight: 600; }
+table.list tr.clickable { cursor: pointer; }
+table.list tr.clickable:hover td { background: var(--surface-0); }
+.muted { color: var(--text-muted); font-size: 13px; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.err { color: var(--serious); font-size: 13.5px; white-space: pre-wrap; margin-top: 6px; }
+.ok { color: var(--good); font-size: 13.5px; }
+.spin { display: none; color: var(--text-secondary); font-size: 13.5px; }
+footer { text-align: center; color: var(--text-muted); font-size: 12.5px; padding: 8px 0 24px; }
+details > summary { cursor: pointer; }
+pre.sig { background: var(--surface-0); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px; font-family: var(--mono); font-size: 12.5px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>VibeQuant</h1>
+  <nav class="modes">
+    <button data-view="strategy" data-i18n="view_strategy"></button>
+    <button data-view="factor" data-i18n="view_factor"></button>
+    <button data-view="deploy" data-i18n="view_deploy"></button>
+    <button data-view="settings">⚙</button>
+  </nav>
+  <span class="spacer"></span>
+  <button id="langBtn"></button>
+</header>
+
+<main>
+
+<!-- ==================== RESEARCH (strategy + factor) ==================== -->
+<div id="view-research" class="cols">
+<section>
+  <div class="card">
+    <h2 data-i18n="input_title"></h2>
+    <textarea id="sourceInput"></textarea>
+    <div class="chips" id="examples"></div>
+    <div class="row">
+      <button class="primary" id="analyzeBtn" data-i18n="analyze_btn"></button>
+      <button id="pdfBtn" data-i18n="pdf_btn"></button>
+      <input type="file" id="pdfFile" accept=".pdf" style="display:none">
+      <span class="spin" id="analyzeSpin" data-i18n="analyzing"></span>
+    </div>
+    <div class="muted" id="llmHint" style="margin-top:6px"></div>
+    <div class="err" id="analyzeError"></div>
+  </div>
+
+  <div class="card" id="briefCard" style="display:none">
+    <h2 data-i18n="brief_title"></h2>
+    <div id="briefHead"></div>
+    <div id="briefSuggestions"></div>
+  </div>
+
+  <div class="card" id="strategyBuilderCard" style="display:none">
+    <h2 data-i18n="sbuilder_title"></h2>
+    <div class="grid2">
+      <div><label class="small" data-i18n="f_market"></label>
+        <select id="stratMarketSelect"></select></div>
+      <div><label class="small" data-i18n="s_universe"></label>
+        <select id="stratUniverseSelect"></select></div>
+      <div style="grid-column: 1 / -1"><label class="small" data-i18n="f_symbols"></label>
+        <input type="text" id="stratSymbols"></div>
+      <div><label class="small" data-i18n="builder_start"></label>
+        <input type="date" id="stratStart" value="2021-01-01"></div>
+      <div><label class="small" data-i18n="builder_end"></label>
+        <input type="date" id="stratEnd" value="2024-12-31"></div>
+      <div><label class="small" data-i18n="s_template"></label>
+        <select id="stratTemplate"></select></div>
+      <div><label class="small" data-i18n="s_params"></label>
+        <input type="text" id="stratParams" class="mono" value="{}"></div>
+    </div>
+    <div class="row">
+      <button class="primary" id="stratBuildBtn" data-i18n="build_btn"></button>
+      <span class="muted" data-i18n="build_hint"></span>
+    </div>
+  </div>
+
+  <div class="card" id="builderCard" style="display:none">
+    <h2 data-i18n="builder_title"></h2>
+    <label class="small" data-i18n="builder_exprs"></label>
+    <textarea id="factorExprs">Mom20 = Delta(Close, 20) / Delay(Close, 20)</textarea>
+    <details style="margin:6px 0"><summary class="muted" data-i18n="expr_ref"></summary>
+      <div class="mono" style="margin-top:6px; line-height:1.8">
+        Ts_Mean(x,d) · Ts_Std(x,d) · Ts_Max/Min/Sum(x,d) · Ts_Corr(x,y,d) ·
+        Ts_Rank(x,d) · Ts_ArgMax/ArgMin(x,d) · Delay(x,d) · Delta(x,d) ·
+        Rank(x) · Scale(x) · Log(x) · Abs(x) · Sign(x) · If(c,a,b)<br>
+        <span class="muted" data-i18n="expr_cols"></span>
+      </div>
+    </details>
+    <div class="grid2">
+      <div><label class="small" data-i18n="f_market"></label>
+        <select id="marketSelect"></select></div>
+      <div><label class="small" data-i18n="f_universe"></label>
+        <select id="universeSelect"></select></div>
+      <div style="grid-column: 1 / -1"><label class="small" data-i18n="f_symbols"></label>
+        <input type="text" id="universeInput"></div>
+      <div><label class="small" data-i18n="builder_start"></label>
+        <input type="date" id="startDate" value="2021-01-01"></div>
+      <div><label class="small" data-i18n="builder_end"></label>
+        <input type="date" id="endDate" value="2024-12-31"></div>
+    </div>
+    <div class="grid3">
+      <div><label class="small" data-i18n="f_neut"></label>
+        <select id="neutSelect">
+          <option value="none">none</option>
+          <option value="demean">demean (market)</option>
+          <option value="industry">industry</option>
+          <option value="zscore">zscore</option>
+          <option value="rank">rank</option>
+        </select></div>
+      <div><label class="small" data-i18n="f_decay"></label>
+        <input type="number" id="decayInput" value="0" min="0" max="60"></div>
+      <div><label class="small" data-i18n="f_trunc"></label>
+        <input type="number" id="truncInput" value="0" min="0" max="0.45" step="0.01"></div>
+      <div><label class="small" data-i18n="f_maxpos"></label>
+        <input type="number" id="maxPosInput" value="0" min="0" max="1" step="0.05"></div>
+      <div><label class="small" data-i18n="f_maxtrade"></label>
+        <input type="number" id="maxTradeInput" value="0" min="0" max="1" step="0.05"></div>
+      <div><label class="small" data-i18n="f_quant"></label>
+        <input type="number" id="quantInput" value="4" min="2" max="10"></div>
+    </div>
+    <div class="row">
+      <button class="primary" id="buildBtn" data-i18n="build_btn"></button>
+      <span class="muted" data-i18n="build_hint"></span>
+    </div>
+  </div>
+
+  <div class="card" id="planCard" style="display:none">
+    <h2 data-i18n="plan_title"></h2>
+    <div id="clarifications"></div>
+    <ol class="plan" id="planList"></ol>
+    <h2 style="margin-top:14px" data-i18n="yaml_title"></h2>
+    <textarea class="code" id="yamlEdit" spellcheck="false"></textarea>
+    <div class="row">
+      <button class="primary" id="runBtn" data-i18n="run_btn"></button>
+      <button id="deployFromTaskBtn" data-i18n="deploy_from_task"></button>
+      <span class="spin" id="runSpin" data-i18n="running"></span>
+    </div>
+    <div class="err" id="runError"></div>
+  </div>
+</section>
+
+<section>
+  <div class="card" id="resultCard" style="display:none">
+    <div class="row" style="margin:0 0 10px">
+      <button class="back" id="resultBackBtn">← <span data-i18n="back_btn"></span></button>
+      <span data-i18n="result_title" style="font-weight:600"></span>
+      <span class="muted" id="runIdLabel"></span>
+      <span class="badge" id="validBadge" style="display:none"></span>
+    </div>
+    <div id="validBox" class="muted" style="margin:0 0 10px"></div>
+    <div class="row" style="margin-top:8px">
+      <input type="text" id="refineInput" style="flex:1; min-width:220px">
+      <button id="refineBtn" data-i18n="refine_btn"></button>
+      <button id="autoBtn" data-i18n="auto_btn"></button>
+      <span class="spin" id="refineSpin" data-i18n="running"></span>
+    </div>
+    <div id="refineOut"></div>
+
+    <div id="strategyResult" style="display:none">
+      <div class="tiles" id="tiles"></div>
+      <details style="margin-top:12px">
+        <summary class="muted" data-i18n="code_strategy"></summary>
+        <pre class="sig" id="strategyCode"></pre>
+      </details>
+      <h2 style="margin-top:16px" data-i18n="akq_report_title"></h2>
+      <div id="frameBox"></div>
+      <details style="margin-top:12px">
+        <summary class="muted" data-i18n="report_toggle"></summary>
+        <div class="report" id="reportMd"></div>
+      </details>
+    </div>
+
+    <div id="factorResult" style="display:none">
+      <details style="margin-bottom:10px">
+        <summary class="muted" data-i18n="code_factor"></summary>
+        <pre class="sig" id="factorCode"></pre>
+      </details>
+      <div style="overflow-x:auto"><table class="stats" id="factorStats"></table></div>
+      <div class="chips" id="factorChips" style="margin-top:10px"></div>
+      <h2 style="margin-top:10px" data-i18n="ic_title"></h2>
+      <div class="chartwrap" id="icWrap"><div class="tooltip"></div><div class="chartbox"></div></div>
+      <h2 style="margin-top:16px" data-i18n="layers_title"></h2>
+      <div class="chartwrap" id="layerWrap"><div class="tooltip"></div><div class="chartbox"></div></div>
+      <div class="legend" id="layerLegend"></div>
+      <details style="margin-top:12px">
+        <summary class="muted" data-i18n="report_toggle"></summary>
+        <div class="report" id="factorReportMd"></div>
+      </details>
+    </div>
+  </div>
+
+  <div class="card" id="historyCard">
+    <h2 data-i18n="history_title"></h2>
+    <div id="historyBox" class="muted"></div>
+  </div>
+</section>
+</div>
+
+<!-- ============================== DEPLOY =============================== -->
+<div id="view-deploy" style="display:none">
+  <div class="cols">
+  <section>
+    <div class="card">
+      <h2 data-i18n="deploy_new_title"></h2>
+      <div class="muted" data-i18n="deploy_explain" style="margin-bottom:8px"></div>
+      <label class="small" data-i18n="deploy_yaml"></label>
+      <textarea class="code" id="deployYaml" style="min-height:180px" spellcheck="false"></textarea>
+      <div class="grid2">
+        <div><label class="small" data-i18n="deploy_email"></label>
+          <input type="text" id="deployEmail" placeholder="you@example.com"></div>
+        <div><label class="small" data-i18n="deploy_time"></label>
+          <input type="text" id="deployTime" value="16:30"></div>
+      </div>
+      <div class="row">
+        <button class="primary" id="deployCreateBtn" data-i18n="deploy_create"></button>
+        <span class="spin" id="deploySpin" data-i18n="running"></span>
+      </div>
+      <div class="err" id="deployError"></div>
+      <div class="note" data-i18n="deploy_email_note" style="margin-top:10px"></div>
+    </div>
+  </section>
+  <section>
+    <div class="card">
+      <h2 data-i18n="deploy_list_title"></h2>
+      <div id="deployListBox" class="muted"></div>
+    </div>
+    <div class="card" id="deploySignalsCard" style="display:none">
+      <h2 data-i18n="deploy_signals_title"></h2>
+      <pre class="sig" id="deploySignals"></pre>
+    </div>
+  </section>
+  </div>
+</div>
+
+<!-- ============================= SETTINGS ============================== -->
+<div id="view-settings" style="display:none">
+  <div class="card" style="max-width:640px">
+    <h2 data-i18n="llm_title"></h2>
+    <div class="muted" data-i18n="llm_explain" style="margin-bottom:8px"></div>
+    <div id="llmStatus" class="muted" style="margin-bottom:8px"></div>
+    <label class="small">model</label>
+    <input type="text" id="llmModel" placeholder="gpt-5-mini">
+    <label class="small" style="margin-top:8px">base_url</label>
+    <input type="text" id="llmBaseUrl" placeholder="https://api.openai.com/v1">
+    <label class="small" style="margin-top:8px">api_key</label>
+    <input type="password" id="llmApiKey" placeholder="sk-...">
+    <div class="row">
+      <button class="primary" id="llmSaveBtn" data-i18n="llm_save"></button>
+      <button id="llmTestBtn" data-i18n="llm_test"></button>
+      <span class="spin" id="llmSpin" data-i18n="running"></span>
+    </div>
+    <div id="llmResult" style="margin-top:8px"></div>
+  </div>
+  <div class="card" style="max-width:640px">
+    <h2 data-i18n="email_title"></h2>
+    <div class="muted" data-i18n="email_explain"></div>
+  </div>
+</div>
+
+</main>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------ i18n */
+const I18N = {
+  en: {
+    view_strategy: "Strategy Research", view_factor: "Factor Research",
+    view_deploy: "Deploy",
+    input_title: "1 · Research input — idea, arXiv link, forum URL, or PDF",
+    analyze_btn: "Analyze",
+    pdf_btn: "Upload PDF…", analyzing: "analyzing…",
+    brief_title: "Research brief", suggestions_title: "Suggested tasks",
+    builder_title: "Factor workbench",
+    builder_exprs: "Factor expressions (one per line, Name = Expr)",
+    expr_ref: "expression reference", expr_cols: "columns: Open, High, Low, Close, Volume",
+    f_universe: "Universe", f_symbols: "Symbols (comma separated)",
+    f_neut: "Neutralization", f_decay: "Decay (days)", f_trunc: "Truncation (per tail)",
+    f_forward: "Forward days", f_quant: "Quantiles",
+    builder_start: "Start", builder_end: "End",
+    build_btn: "Build task", build_hint: "assembles the YAML below",
+    plan_title: "2 · Review the plan", yaml_title: "Task DSL (editable)",
+    run_btn: "Run", running: "working…",
+    deploy_from_task: "Deploy…",
+    result_title: "Result",
+    akq_report_title: "Strategy report (akquant HTML)",
+    ic_title: "IC series (cross-sectional Spearman)",
+    layers_title: "Quantile layers · cumulative forward returns",
+    report_toggle: "Markdown report",
+    history_title: "Results", hist_strategy: "Strategy results",
+    hist_factor: "Factor results", no_runs: "No runs yet.",
+    col_market: "Market", col_universe: "Universe",
+    m_ret: "Total return", m_ann: "Annualized", m_sharpe: "Sharpe",
+    m_mdd: "Max drawdown", m_win: "Win rate", m_trades: "Trades",
+    col_time: "time", col_run: "run",
+    col_sharpe: "Sharpe", col_ic: "IC",
+    code_strategy: "Strategy code", code_factor: "Factor code",
+    v_low: "overfit risk: low", v_medium: "overfit risk: medium",
+    v_high: "overfit risk: high",
+    v_perm: "perm p", v_trials: "trials", v_sig: "deflated-significant",
+    v_cons: "sub-period consistency", v_windows: "positive windows",
+    th_factor: "factor", th_ic: "IC mean", th_pos: "IC>0",
+    th_t: "t-stat", th_ls: "LS return", th_n: "periods",
+    open_report: "open full report ↗", no_html: "no HTML report for this run",
+    evidence: "evidence", use_task: "click to load this task",
+    back_btn: "Back",
+    d_symbol: "symbol", d_source: "source", d_rows: "rows", d_range: "range",
+    d_size: "size", d_updated: "file", d_close: "Close", d_tail: "last 10 bars",
+    f_name: "factor", f_expr: "expression", f_ic: "IC mean", f_icir: "ICIR",
+    f_ls: "LS ret", f_uni: "universe", f_created: "created", f_openrun: "open source run →",
+    s_name: "run", s_date: "date", s_ret: "return", s_sharpe: "sharpe", s_risk: "risk",
+    s_open: "click a row to open the akquant report",
+    no_items: "nothing here yet",
+    deploy_new_title: "New deployment (daily signals)",
+    deploy_explain: "Runs weekdays after the close (Asia/Shanghai): fetches fresh bars, computes next-day signals from the strategy, emails them. Signals only — no orders are placed.",
+    deploy_yaml: "Strategy task YAML (kind: strategy, data.source: etf)",
+    deploy_email: "Email to (empty = archive only)", deploy_time: "Run at (HH:MM)",
+    deploy_create: "Deploy",
+    deploy_list_title: "Deployments",
+    deploy_signals_title: "Latest signal report",
+    deploy_email_note: "Email needs config/email.yaml (see config/email.example.yaml). Without it, signals are archived under workspace/signals/ and shown here.",
+    dep_run: "run now", dep_del: "delete", dep_on: "on", dep_off: "off",
+    llm_title: "LLM API (optional)",
+    llm_explain: "OpenAI-compatible endpoint used to extract research ideas from papers/URLs. Everything falls back to keyword rules when unset.",
+    llm_save: "Save", llm_test: "Test connection",
+    llm_configured: "configured", llm_not_configured: "not configured — using rule-based extraction",
+    llm_on: "LLM idea extraction: on", llm_off: "LLM idea extraction: off (rules)",
+    email_title: "Signal email (optional)",
+    email_explain: "Create config/email.yaml from config/email.example.yaml (SMTP host, account, auth code). Deployments email through it; without it they archive to files.",
+    f_market: "Market", auto_btn: "Agent auto-optimize",
+    auto_hist: "Auto-optimization history", auto_obj: "objective",
+    auto_best: "best round loaded into the task editor",
+    sbuilder_title: "Strategy workbench",
+    s_universe: "Universe", s_template: "Strategy template", s_params: "Params (JSON)",
+    f_maxpos: "max_position (×ADV20)", f_maxtrade: "max_trade (×ADV20)",
+    refine_btn: "Ask to optimize", refine_ph: "e.g. try industry neutralization; why is drawdown so large?",
+    th_cls: "LS (capped)", th_turn: "turnover",
+    ex_strategy: [
+      "5/20 MA cross on 510300, 2021-01-01 to 2024-12-31",
+      "RSI oversold rebound on 159915 ETF, last 3 years",
+      "https://arxiv.org/abs/1601.00991"
+    ],
+    ex_factor: [
+      "I think low-volatility ETFs outperform; also test a turnover factor",
+      "momentum and reversal factors on A-share ETFs",
+      "https://arxiv.org/abs/1601.00991"
+    ]
+  },
+  zh: {
+    view_strategy: "策略研究", view_factor: "因子研究",
+    view_deploy: "部署",
+    input_title: "1 · 研究输入 —— 想法、arXiv 链接、论坛 URL 或 PDF",
+    analyze_btn: "解析",
+    pdf_btn: "上传 PDF…", analyzing: "分析中…",
+    brief_title: "研究简报", suggestions_title: "建议任务",
+    builder_title: "因子工作台",
+    builder_exprs: "因子表达式（每行一个，名称 = 表达式）",
+    expr_ref: "表达式参考", expr_cols: "数据列：Open, High, Low, Close, Volume",
+    f_universe: "标的池 Universe", f_symbols: "标的（逗号分隔）",
+    f_neut: "中性化 Neutralization", f_decay: "衰减 Decay（日）", f_trunc: "截断 Truncation（每尾）",
+    f_forward: "前瞻天数", f_quant: "分层数",
+    builder_start: "开始", builder_end: "结束",
+    build_btn: "生成任务", build_hint: "生成下方 YAML",
+    plan_title: "2 · 确认计划", yaml_title: "任务 DSL（可编辑）",
+    run_btn: "运行", running: "运行中…",
+    deploy_from_task: "部署…",
+    result_title: "结果",
+    akq_report_title: "策略报告（akquant HTML）",
+    ic_title: "IC 序列（横截面 Spearman）",
+    layers_title: "分层回测 · 累计前瞻收益",
+    report_toggle: "Markdown 报告",
+    history_title: "结果列表", hist_strategy: "策略结果",
+    hist_factor: "因子结果", no_runs: "暂无运行记录。",
+    col_market: "市场", col_universe: "Universe",
+    m_ret: "总收益", m_ann: "年化收益", m_sharpe: "夏普",
+    m_mdd: "最大回撤", m_win: "胜率", m_trades: "交易次数",
+    col_time: "时间", col_run: "运行",
+    col_sharpe: "夏普", col_ic: "IC",
+    code_strategy: "策略代码", code_factor: "因子代码",
+    v_low: "过拟合风险：低", v_medium: "过拟合风险：中", v_high: "过拟合风险：高",
+    v_perm: "置换p", v_trials: "尝试次数", v_sig: "折减后显著",
+    v_cons: "子区间同号率", v_windows: "正收益窗口",
+    th_factor: "因子", th_ic: "IC 均值", th_pos: "IC>0",
+    th_t: "t 统计量", th_ls: "多空收益", th_n: "期数",
+    open_report: "在新窗口打开完整报告 ↗", no_html: "该运行没有 HTML 报告",
+    evidence: "证据", use_task: "点击载入该任务",
+    back_btn: "返回",
+    d_symbol: "标的", d_source: "来源", d_rows: "行数", d_range: "区间",
+    d_size: "大小", d_updated: "文件", d_close: "收盘价", d_tail: "最近 10 根K线",
+    f_name: "因子", f_expr: "表达式", f_ic: "IC 均值", f_icir: "ICIR",
+    f_ls: "多空收益", f_uni: "标的池", f_created: "创建时间", f_openrun: "打开来源运行 →",
+    s_name: "运行", s_date: "日期", s_ret: "收益", s_sharpe: "夏普", s_risk: "风险",
+    s_open: "点击任意行打开 akquant 报告",
+    no_items: "暂无内容",
+    deploy_new_title: "新建部署（每日信号）",
+    deploy_explain: "工作日收盘后（Asia/Shanghai）自动运行：拉取最新行情，计算次日信号并发送邮件。仅生成信号，不会自动下单。",
+    deploy_yaml: "策略任务 YAML（kind: strategy，data.source: etf）",
+    deploy_email: "收件邮箱（留空则仅存档）", deploy_time: "运行时间（HH:MM）",
+    deploy_create: "部署",
+    deploy_list_title: "部署列表",
+    deploy_signals_title: "最新信号报告",
+    deploy_email_note: "发邮件需配置 config/email.yaml（参考 config/email.example.yaml）。未配置时信号会存档到 workspace/signals/ 并显示在此。",
+    dep_run: "立即运行", dep_del: "删除", dep_on: "启用", dep_off: "停用",
+    llm_title: "LLM API（可选）",
+    llm_explain: "OpenAI 兼容接口，用于从论文/网页中提取研究想法。未配置时回退到关键词规则。",
+    llm_save: "保存", llm_test: "测试连接",
+    llm_configured: "已配置", llm_not_configured: "未配置——使用规则提取",
+    llm_on: "LLM 想法提取：已启用", llm_off: "LLM 想法提取：未启用（规则）",
+    email_title: "信号邮件（可选）",
+    email_explain: "参考 config/email.example.yaml 创建 config/email.yaml（SMTP 服务器、账号、授权码）。配置后部署会自动发信，否则信号存档为文件。",
+    f_market: "市场 Market", auto_btn: "Agent 自动迭代",
+    auto_hist: "自动优化历史", auto_obj: "目标值",
+    auto_best: "最优轮次已载入任务编辑器",
+    sbuilder_title: "策略工作台",
+    s_universe: "标的池 Universe", s_template: "策略模板", s_params: "参数（JSON）",
+    f_maxpos: "max_position（×ADV20 成交额）", f_maxtrade: "max_trade（×ADV20 成交额）",
+    refine_btn: "追问优化", refine_ph: "例如：试试行业中性化；为什么回撤这么大？",
+    th_cls: "多空(限仓)", th_turn: "换手",
+    ex_strategy: [
+      "在 510300 上做 5/20 双均线策略回测，2021-01-01 到 2024-12-31",
+      "RSI 超卖反弹策略，标的 159915，过去3年",
+      "https://arxiv.org/abs/1601.00991"
+    ],
+    ex_factor: [
+      "我认为低波动的ETF长期跑赢，同时想验证换手率因子",
+      "在A股ETF上研究动量与反转因子",
+      "https://arxiv.org/abs/1601.00991"
+    ]
+  }
+};
+let lang = localStorage.getItem("vq_lang") ||
+  (navigator.language.startsWith("zh") ? "zh" : "en");
+let view = localStorage.getItem("vq_view") || "factor";
+if (!["strategy", "factor", "deploy", "settings"].includes(view)) view = "factor";   // strategy|factor|library|deploy|settings
+const T = () => I18N[lang];
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+const RAMP_LIGHT = ["#86b6ef","#5598e7","#2a78d6","#1c5cab","#104281",
+                    "#9ec5f4","#6da7ec","#3987e5","#256abf","#184f95"];
+const RAMP_DARK  = ["#6da7ec","#5598e7","#3987e5","#256abf","#184f95",
+                    "#86b6ef","#9ec5f4","#2a78d6","#1c5cab","#0d366b"];
+const darkMode = () => window.matchMedia("(prefers-color-scheme: dark)").matches;
+const layerColor = (i, n) => {
+  const ramp = darkMode() ? RAMP_DARK : RAMP_LIGHT;
+  if (n <= 5) return ramp[Math.round(i * 4 / Math.max(n - 1, 1))];
+  return ramp[i % ramp.length];
+};
+const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+let lastResult = null, historyCache = [], deploymentsCache = [];
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+const postJson = (p, body) => api(p, { method: "POST",
+  headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
+async function withSpin(btnId, spinId, errId, fn) {
+  $(btnId).disabled = true; $(spinId).style.display = "inline";
+  if (errId) $(errId).textContent = "";
+  try { await fn(); } catch (e) { if (errId) $(errId).textContent = e.message; }
+  finally { $(btnId).disabled = false; $(spinId).style.display = "none"; }
+}
+
+/* ---------------------------------------------------- view switching */
+function applyChrome() {
+  document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+  document.querySelectorAll("[data-i18n]").forEach(el => {
+    const key = el.getAttribute("data-i18n");
+    if (T()[key]) el.textContent = T()[key];
+  });
+  $("langBtn").textContent = lang === "zh" ? "English" : "中文";
+  document.querySelectorAll("nav.modes [data-view]").forEach(b =>
+    b.classList.toggle("active", b.dataset.view === view));
+  const research = view === "strategy" || view === "factor";
+  $("view-research").style.display = research ? "" : "none";
+  $("view-deploy").style.display = view === "deploy" ? "" : "none";
+  $("view-settings").style.display = view === "settings" ? "" : "none";
+  if (research) {
+    $("builderCard").style.display = view === "factor" ? "" : "none";
+    $("strategyBuilderCard").style.display = view === "strategy" ? "" : "none";
+    $("sourceInput").placeholder = (T()["ex_" + view] || [""])[0] || "";
+    $("refineInput").placeholder = T().refine_ph || "";
+    renderExamples();
+  }
+  if (view === "deploy") loadDeployments();
+  if (view === "settings") loadLLMConfig();
+  const ht = document.querySelector('[data-i18n="history_title"]');
+  if (ht) ht.textContent = view === "strategy" ? T().hist_strategy : T().hist_factor;
+  renderHistory();
+  if (research) showHistoryPanel();
+}
+document.querySelectorAll("nav.modes [data-view]").forEach(b => {
+  b.onclick = () => { view = b.dataset.view; localStorage.setItem("vq_view", view); applyChrome(); };
+});
+$("langBtn").onclick = () => { lang = lang === "zh" ? "en" : "zh";
+  localStorage.setItem("vq_lang", lang); applyChrome(); };
+
+function renderExamples() {
+  $("examples").innerHTML = "";
+  (T()["ex_" + view] || []).forEach(text => {
+    const b = document.createElement("button");
+    b.textContent = text.length > 46 ? text.slice(0, 44) + "…" : text;
+    b.title = text;
+    b.onclick = () => { $("sourceInput").value = text; };
+    $("examples").appendChild(b);
+  });
+}
+
+/* ------------------------------------------------------- universes */
+let marketsCache = [], strategiesCache = [];
+async function loadMarkets() {
+  try {
+    marketsCache = await api("/api/markets");
+    strategiesCache = await api("/api/strategies");
+  } catch (e) { return; }
+  fillMarketSelect($("marketSelect"), "cn_etf");
+  fillMarketSelect($("stratMarketSelect"), "cn_etf");
+  $("stratTemplate").innerHTML = strategiesCache.map(t =>
+    `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join("");
+  syncMarket("factor"); syncMarket("strat"); syncStratTemplate();
+  $("marketSelect").onchange = () => syncMarket("factor");
+  $("stratMarketSelect").onchange = () => syncMarket("strat");
+  $("universeSelect").onchange = () => syncUniverse("factor");
+  $("stratUniverseSelect").onchange = () => syncUniverse("strat");
+  $("stratTemplate").onchange = syncStratTemplate;
+}
+function _ids(which) {
+  return which === "factor"
+    ? { market: "marketSelect", uni: "universeSelect", syms: "universeInput" }
+    : { market: "stratMarketSelect", uni: "stratUniverseSelect", syms: "stratSymbols" };
+}
+function fillMarketSelect(sel, def) {
+  sel.innerHTML = marketsCache.map(mk =>
+    `<option value="${esc(mk.key)}">${esc(lang === "zh" ? mk.label_zh : mk.label_en)}</option>`).join("");
+  sel.value = def;
+}
+function currentMarket(which) {
+  const ids = _ids(which);
+  return marketsCache.find(mk => mk.key === $(ids.market).value) || marketsCache[0];
+}
+function syncMarket(which) {
+  const ids = _ids(which);
+  const mk = currentMarket(which);
+  if (!mk) return;
+  let universes = mk.universes;
+  if (which === "factor") {  // factor mode needs a cross-section (>= 2 symbols)
+    universes = universes.filter(u =>
+      u.dynamic || u.key === "custom" || (u.symbols || []).length >= 2);
+  }
+  $(ids.uni).innerHTML = universes.map(u =>
+    `<option value="${esc(u.key)}">${esc(lang === "zh" ? u.label_zh : u.label_en)}</option>`).join("");
+  syncUniverse(which);
+}
+async function syncUniverse(which) {
+  const ids = _ids(which);
+  const mk = currentMarket(which);
+  if (!mk) return;
+  const u = mk.universes.find(x => x.key === $(ids.uni).value);
+  if (!u) return;
+  if (u.dynamic) {
+    $(ids.syms).value = "…";
+    try {
+      const r = await api(`/api/universe_symbols?market=${encodeURIComponent(mk.key)}&key=${encodeURIComponent(u.key)}`);
+      $(ids.syms).value = r.symbols.join(", ");
+    } catch (e) { $(ids.syms).value = ""; alert(e.message); }
+  } else if ((u.symbols || []).length) {
+    $(ids.syms).value = u.symbols.join(", ");
+  }
+}
+function marketSource(which) {
+  const mk = currentMarket(which);
+  return (mk && mk.source) || "etf";
+}
+function syncStratTemplate() {
+  const t = strategiesCache.find(x => x.name === $("stratTemplate").value);
+  if (t) $("stratParams").value = JSON.stringify(t.defaults || {});
+}
+
+/* strategy workbench -> YAML */
+$("stratBuildBtn").onclick = () => {
+  let params = {};
+  try { params = JSON.parse($("stratParams").value || "{}"); } catch (e) {
+    alert("params must be JSON"); return;
+  }
+  const symbols = $("stratSymbols").value.split(/[,，\s]+/).filter(Boolean);
+  if (!symbols.length) return;
+  const paramLines = Object.entries(params).map(([k, v]) => `    ${k}: ${v}`);
+  const yaml = [
+    `name: strategy-${$("stratUniverseSelect").value}`,
+    "kind: strategy",
+    `intent: "built with the strategy workbench"`,
+    "data:",
+    `  source: ${marketSource("strat")}`,
+    `  universe: ${$("stratUniverseSelect").value}`,
+    "  symbols: [" + symbols.map(x => `"${x}"`).join(", ") + "]",
+    `  start: "${$("stratStart").value}"`,
+    `  end: "${$("stratEnd").value}"`,
+    "strategy:",
+    `  name: ${$("stratTemplate").value}`,
+    ...(paramLines.length ? ["  params:", ...paramLines.map(l => "  " + l)] : []),
+    "report:", `  language: ${lang}`,
+  ].join("\n");
+  showTask(yaml, null, []);
+};
+
+/* --------------------------------------------------------- analyze */
+$("analyzeBtn").onclick = async () => {
+  const source = $("sourceInput").value.trim();
+  if (!source) return;
+  await withSpin("analyzeBtn", "analyzeSpin", "analyzeError", async () => {
+    const isUrl = /^https?:\/\//i.test(source) || /arxiv\.org/i.test(source);
+    // direct strategy instructions skip ingestion: try the fast parser
+    // first in strategy mode; fall back to research ingestion otherwise
+    if (!isUrl && view === "strategy") {
+      const p = await postJson("/api/parse", { prompt: source });
+      if (p.recognized) {
+        $("briefCard").style.display = "none";
+        showTask(p.yaml, p.plan, p.clarifications);
+        return;
+      }
+    }
+    const brief = await postJson("/api/ingest",
+      { source, mode: view, language: lang,
+        start: $("startDate").value, end: $("endDate").value });
+    renderBrief(brief);
+  });
+};
+$("pdfBtn").onclick = () => $("pdfFile").click();
+$("pdfFile").onchange = async () => {
+  const file = $("pdfFile").files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("mode", view); fd.append("language", lang);
+  fd.append("start", $("startDate").value); fd.append("end", $("endDate").value);
+  await withSpin("pdfBtn", "analyzeSpin", "analyzeError", async () => {
+    const brief = await api("/api/ingest_pdf", { method: "POST", body: fd });
+    renderBrief(brief);
+  });
+  $("pdfFile").value = "";
+};
+
+function renderBrief(brief) {
+  $("briefCard").style.display = "";
+  let head = `<div><b>${esc(brief.title || brief.source)}</b>
+    <span class="badge">${esc(brief.source_type)}</span></div>`;
+  if (brief.excerpt) head += `<p class="muted" style="margin:6px 0">${esc(
+    brief.excerpt.slice(0, 320))}${brief.excerpt.length > 320 ? "…" : ""}</p>`;
+  (brief.notes || []).forEach(n => head += `<div class="note">${esc(n)}</div>`);
+  $("briefHead").innerHTML = head;
+
+  const box = $("briefSuggestions");
+  if (!brief.suggestions || !brief.suggestions.length) {
+    box.innerHTML = `<div class="muted">–</div>`; return;
+  }
+  box.innerHTML = `<h2 style="margin-top:12px">${T().suggestions_title}</h2>`;
+  brief.suggestions.forEach(s => {
+    const idea = s.idea;
+    const div = document.createElement("div");
+    div.className = "suggestion";
+    const title = lang === "zh" ? idea.title_zh : idea.title_en;
+    const what = s.mode === "factor"
+      ? (idea.factor_expressions || []).map(esc).join("<br>")
+      : `strategy: ${esc(idea.strategy_name || "")}`;
+    div.innerHTML = `<div class="t">${esc(title)}
+        <span class="badge kind">${esc(s.mode)}</span></div>
+      <div class="m">${T().evidence}: ${esc((idea.evidence || []).join(", "))}</div>
+      <div class="m mono">${what}</div>
+      <div class="m">${T().use_task}</div>`;
+    div.onclick = () => showTask(s.yaml, s.plan, []);
+    box.appendChild(div);
+  });
+}
+
+/* -------------------------------------------------- factor builder */
+$("buildBtn").onclick = () => {
+  const exprs = $("factorExprs").value.split("\n").map(s => s.trim()).filter(Boolean);
+  if (!exprs.length) return;
+  const universe = $("universeInput").value.split(/[,，\s]+/).filter(Boolean);
+  const yaml = [
+    "name: factor-study", "kind: factor",
+    `intent: "built with the factor workbench"`,
+    "data:", `  source: ${marketSource("factor")}`,
+    `  universe: ${$("universeSelect").value}`,
+    "  symbols: [" + universe.map(x => `"${x}"`).join(", ") + "]",
+    `  start: "${$("startDate").value}"`, `  end: "${$("endDate").value}"`,
+    "factor:", "  expressions:",
+    ...exprs.map(e => `    - "${e.replace(/"/g, "'")}"`),
+    `  quantiles: ${parseInt($("quantInput").value) || 4}`,
+    `  truncation: ${parseFloat($("truncInput").value) || 0}`,
+    `  neutralization: ${$("neutSelect").value}`,
+    `  decay: ${parseInt($("decayInput").value) || 0}`,
+    `  max_position: ${parseFloat($("maxPosInput").value) || 0}`,
+    `  max_trade: ${parseFloat($("maxTradeInput").value) || 0}`,
+    "report:", `  language: ${lang}`,
+  ].join("\n");
+  showTask(yaml, null, []);
+};
+
+/* ---------------------------------------------------- task & plan */
+function showTask(yaml, plan, clarifications) {
+  $("planCard").style.display = "";
+  $("yamlEdit").value = yaml;
+  $("clarifications").innerHTML = (clarifications || [])
+    .map(c => `<div class="note">💡 ${esc(c)}</div>`).join("");
+  $("planList").innerHTML = (plan || [])
+    .map(s => `<li>${esc(lang === "zh" ? s.title_zh : s.title_en)}</li>`).join("");
+  $("runError").textContent = "";
+  $("planCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+$("runBtn").onclick = async () => {
+  await withSpin("runBtn", "runSpin", "runError", async () => {
+    const yamlText = $("yamlEdit").value;
+    const r = await postJson("/api/run", { yaml_text: yamlText });
+    if (!r.ok) { $("runError").textContent = `[${r.failed_step}] ${r.error}`; return; }
+    r.task_yaml = yamlText;
+    lastResult = r;
+    renderResult(r);
+    loadHistory();
+  });
+};
+
+/* refine: follow-up question -> revised task proposal */
+$("refineBtn").onclick = async () => {
+  const question = $("refineInput").value.trim();
+  if (!question || !lastResult) return;
+  await withSpin("refineBtn", "refineSpin", null, async () => {
+    try {
+      const out = await postJson("/api/refine", {
+        yaml_text: lastResult.task_yaml || $("yamlEdit").value,
+        question,
+        result_summary: {
+          kind: lastResult.kind,
+          metrics: lastResult.metrics,
+          num_trades: lastResult.num_trades,
+          factor_stats: (lastResult.factor || {}).stats || [],
+          risk: lastResult.risk,
+        },
+        language: lang,
+      });
+      $("refineOut").innerHTML =
+        `<div class="note">💡 ${esc(out.explanation)} ` +
+        `<span class="badge">${esc(out.engine)}</span></div>`;
+      showTask(out.yaml, out.plan, []);
+    } catch (e) {
+      $("refineOut").innerHTML = `<div class="err">${esc(e.message)}</div>`;
+    }
+  });
+};
+$("deployFromTaskBtn").onclick = () => {
+  $("deployYaml").value = $("yamlEdit").value;
+  view = "deploy"; localStorage.setItem("vq_view", view); applyChrome();
+};
+
+/* agent auto-optimize: run -> reflect -> revise, keep the best */
+$("autoBtn").onclick = async () => {
+  if (!lastResult) return;
+  await withSpin("autoBtn", "refineSpin", null, async () => {
+    try {
+      const out = await postJson("/api/auto_optimize", {
+        yaml_text: lastResult.task_yaml || $("yamlEdit").value,
+        rounds: 2,  // baseline + one agent revision
+        language: lang,
+      });
+      const t = T();
+      let html = `<div class="note"><b>${t.auto_hist}</b> (${esc(out.objective_name)})<br>`;
+      out.history.forEach(h => {
+        const obj = h.objective == null ? "–" : h.objective;
+        const best = out.best && h.round === out.best.round ? " ⭐" : "";
+        html += `r${h.round}: ${t.auto_obj}=${obj}${best} — ${esc((h.explanation || "").slice(0, 110))}<br>`;
+      });
+      html += `${t.auto_best}</div>`;
+      $("refineOut").innerHTML = html;
+      if (out.best) {
+        showTask(out.best.yaml, null, []);
+        await loadHistory();
+        await openRun(out.best.run_id, false);
+      }
+    } catch (e) {
+      $("refineOut").innerHTML = `<div class="err">${esc(e.message)}</div>`;
+    }
+  });
+};
+
+/* ---------------------------------------------------------- result */
+function fmtPct(v) { return v == null ? "–" : v.toFixed(2) + "%"; }
+function fmtNum(v, d = 2) { return v == null ? "–" : Number(v).toFixed(d); }
+function tile(label, value, cls) {
+  return `<div class="tile"><div class="v ${cls || ""}">${value}</div>
+    <div class="l">${esc(label)}</div></div>`;
+}
+function renderValidation(v) {
+  const badge = $("validBadge"), box = $("validBox");
+  if (!v || !v.overfit_risk) {
+    badge.style.display = "none"; box.innerHTML = ""; return;
+  }
+  const t = T();
+  const risk = v.overfit_risk;
+  badge.style.display = "";
+  badge.className = "badge " + (risk === "low" ? "pass" : risk === "high" ? "flag" : "");
+  badge.textContent = t["v_" + risk] || risk;
+  let html = "";
+  if (v.kind === "factor") {
+    const rows = Object.entries(v.per_factor || {}).map(([name, f]) => {
+      const perm = f.permutation || {}, cons = f.consistency || {};
+      return `${esc(name)}: ${t.v_perm}=${perm.p_raw == null ? "–" : perm.p_raw}` +
+        ` · ${t.v_trials}=${f.trial_count} (α=${f.alpha_deflated})` +
+        ` · ${t.v_sig}: ${f.significant_deflated ? "✓" : "✗"}` +
+        ` · ${t.v_cons}=${cons.sign_consistency == null ? "–" : cons.sign_consistency}`;
+    });
+    html = rows.join("<br>");
+  } else if (v.positive_fraction != null) {
+    const wins = (v.windows || []).map(w =>
+      `${(w.return * 100).toFixed(1)}%`).join(" / ");
+    html = `${t.v_windows}: ${v.positive_fraction} (${wins})`;
+  }
+  box.innerHTML = html;
+}
+
+function showHistoryPanel() {
+  $("resultCard").style.display = "none";
+  $("historyCard").style.display = "";
+}
+function showDetailPanel() {
+  $("resultCard").style.display = "";
+  $("historyCard").style.display = "none";
+}
+$("resultBackBtn").onclick = () => { showHistoryPanel(); loadHistory(); };
+
+function renderResult(r) {
+  showDetailPanel();
+  $("runIdLabel").textContent = r.run_id;
+  renderValidation(r.validation);
+  const isFactor = r.kind === "factor";
+  $("strategyResult").style.display = isFactor ? "none" : "";
+  $("factorResult").style.display = isFactor ? "" : "none";
+  if (isFactor) renderFactorResult(r); else renderStrategyResult(r);
+}
+function strategyFrame(runId) {
+  const src = `/api/runs/${encodeURIComponent(runId)}/artifact/report.html`;
+  return `<iframe class="reportframe" src="${src}"></iframe>
+    <div style="margin-top:6px"><a href="${src}" target="_blank">${T().open_report}</a></div>`;
+}
+function yamlSection(yamlText, key) {
+  const lines = (yamlText || "").split("\n");
+  const out = [];
+  let inSection = false;
+  for (const line of lines) {
+    if (new RegExp("^" + key + ":").test(line)) { inSection = true; out.push(line); continue; }
+    if (inSection) {
+      if (/^[A-Za-z_]/.test(line)) break;  // next top-level key
+      out.push(line);
+    }
+  }
+  return out.join("\n").trimEnd();
+}
+function strategyNameFromYaml(yamlText) {
+  const section = yamlSection(yamlText, "strategy");
+  const m = section.match(/name:\s*(\S+)/);
+  return m ? m[1] : null;
+}
+
+function renderStrategyResult(r) {
+  const yamlText = r.task_yaml || $("yamlEdit").value || "";
+  const name = strategyNameFromYaml(yamlText);
+  const tpl = strategiesCache.find(t => t.name === name);
+  $("strategyCode").textContent =
+    (yamlSection(yamlText, "strategy") || "") +
+    (tpl && tpl.code ? "\n\n# ---- template source ----\n" + tpl.code : "");
+  const m = r.metrics || {};
+  const retCls = m.total_return_pct == null ? "" :
+    (m.total_return_pct >= 0 ? "pos" : "neg");
+  $("tiles").innerHTML =
+    tile(T().m_ret, fmtPct(m.total_return_pct), retCls) +
+    tile(T().m_ann, m.annualized_return == null ? "–" :
+      (m.annualized_return * 100).toFixed(2) + "%") +
+    tile(T().m_sharpe, fmtNum(m.sharpe_ratio)) +
+    tile(T().m_mdd, m.max_drawdown_pct == null ? "–" :
+      "−" + Math.abs(m.max_drawdown_pct).toFixed(2) + "%") +
+    tile(T().m_win, fmtPct(m.win_rate)) +
+    tile(T().m_trades, r.num_trades == null ? "–" : r.num_trades);
+  $("frameBox").innerHTML = r.has_html_report
+    ? strategyFrame(r.run_id) : `<div class="muted">${T().no_html}</div>`;
+  $("reportMd").innerHTML = mdToHtml(r.report_markdown || "");
+}
+
+/* ------------------------------------------------- factor rendering */
+let factorSel = null;
+function renderFactorResult(r) {
+  const yamlText = r.task_yaml || $("yamlEdit").value || "";
+  $("factorCode").textContent = yamlSection(yamlText, "factor") || "–";
+  const f = r.factor || {};
+  const stats = f.stats || [];
+  const t = T();
+  const hasCaps = stats.some(x => x.constrained_ls_return != null);
+  let html = `<tr><th>${t.th_factor}</th><th>${t.th_ic}</th><th>ICIR</th>
+    <th>${t.th_pos}</th><th>${t.th_t}</th><th>${t.th_ls}</th>` +
+    (hasCaps ? `<th>${t.th_cls}</th><th>${t.th_turn}</th>` : "") +
+    `<th>${t.th_n}</th></tr>`;
+  stats.forEach(s => {
+    const lsCls = s.long_short_total_return == null ? "" :
+      (s.long_short_total_return >= 0 ? "pos" : "neg");
+    html += `<tr><td>${esc(s.name)}</td><td>${fmtNum(s.ic_mean, 4)}</td>
+      <td>${fmtNum(s.icir, 3)}</td><td>${fmtNum(s.ic_positive_rate, 2)}</td>
+      <td>${fmtNum(s.ic_t_stat, 2)}</td>
+      <td class="${lsCls}">${s.long_short_total_return == null ? "–" :
+        (s.long_short_total_return * 100).toFixed(2) + "%"}</td>` +
+      (hasCaps ? `<td>${s.constrained_ls_return == null ? "–" :
+          (s.constrained_ls_return * 100).toFixed(2) + "%"}</td>
+        <td>${fmtNum(s.mean_turnover, 3)}</td>` : "") +
+      `<td>${s.n_periods}</td></tr>`;
+  });
+  $("factorStats").innerHTML = html;
+  const names = stats.map(s => s.name);
+  if (!names.includes(factorSel)) factorSel = names[0] || null;
+  const chips = $("factorChips"); chips.innerHTML = "";
+  names.forEach(name => {
+    const b = document.createElement("button");
+    b.textContent = name;
+    b.className = name === factorSel ? "sel" : "";
+    b.onclick = () => { factorSel = name; renderFactorResult(r); };
+    chips.appendChild(b);
+  });
+  drawFactorCharts(f);
+  $("factorReportMd").innerHTML = mdToHtml(r.report_markdown || "");
+}
+function drawFactorCharts(f) {
+  const icBox = $("icWrap"), layerBox = $("layerWrap");
+  const ic = (f.ic_series || {})[factorSel];
+  if (ic && ic.dates.length) {
+    lineChart(icBox, ic.dates,
+      [{ name: "IC", color: cssVar("--series-1"), values: ic.ic }],
+      { zeroLine: true });
+  } else icBox.querySelector(".chartbox").innerHTML = `<div class="muted">–</div>`;
+  const lc = (f.layer_curves || {})[factorSel];
+  const legend = $("layerLegend"); legend.innerHTML = "";
+  if (lc && lc.dates.length) {
+    const keys = Object.keys(lc.layers || {});
+    const series = keys.map((k, i) => (
+      { name: k, color: layerColor(i, keys.length), values: lc.layers[k] }));
+    if ((lc.long_short || []).length) {
+      series.push({ name: "L-S", color: cssVar("--series-ls"), values: lc.long_short, width: 2.5 });
+    }
+    if ((lc.long_short_constrained || []).length) {
+      const pad = lc.dates.length - lc.long_short_constrained.length;
+      const vals = pad > 0
+        ? Array(pad).fill(1).concat(lc.long_short_constrained)
+        : lc.long_short_constrained;
+      series.push({ name: "L-S capped", color: cssVar("--series-2"), values: vals, width: 2 });
+    }
+    lineChart(layerBox, lc.dates, series, {});
+    series.forEach(s => {
+      legend.innerHTML += `<span><span class="sw" style="background:${s.color}"></span>${esc(s.name)}</span>`;
+    });
+  } else layerBox.querySelector(".chartbox").innerHTML = `<div class="muted">–</div>`;
+}
+
+/* ------------------------------------ generic multi-series SVG chart */
+function lineChart(wrap, dates, series, opts = {}) {
+  const box = wrap.querySelector(".chartbox");
+  const tip = wrap.querySelector(".tooltip");
+  box.innerHTML = ""; tip.style.display = "none";
+  const n = dates.length;
+  if (!n) { box.innerHTML = `<div class="muted">–</div>`; return; }
+  const W = Math.max(box.clientWidth || 680, 320), H = 230;
+  const pad = { l: 52, r: 12, t: 10, b: 22 };
+  let yMin = Infinity, yMax = -Infinity;
+  series.forEach(s => s.values.forEach(v => {
+    if (v < yMin) yMin = v; if (v > yMax) yMax = v; }));
+  if (opts.zeroLine) { yMin = Math.min(yMin, 0); yMax = Math.max(yMax, 0); }
+  const span = (yMax - yMin) || 1;
+  const y0 = yMin - span * 0.06, y1 = yMax + span * 0.06;
+  const X = i => pad.l + (W - pad.l - pad.r) * (n === 1 ? 0 : i / (n - 1));
+  const Y = v => pad.t + (H - pad.t - pad.b) * (1 - (v - y0) / (y1 - y0));
+  const yFmt = opts.yFmt || (v => Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(2));
+  let grid = "", labels = "";
+  for (let g = 0; g <= 3; g++) {
+    const val = y0 + (y1 - y0) * g / 3, y = Y(val);
+    grid += `<line x1="${pad.l}" y1="${y}" x2="${W - pad.r}" y2="${y}"
+      stroke="var(--border)" stroke-width="1"/>`;
+    labels += `<text x="${pad.l - 6}" y="${y + 3.5}" text-anchor="end">${yFmt(val)}</text>`;
+  }
+  if (opts.zeroLine && y0 < 0 && y1 > 0) {
+    grid += `<line x1="${pad.l}" y1="${Y(0)}" x2="${W - pad.r}" y2="${Y(0)}"
+      stroke="var(--text-muted)" stroke-width="1" stroke-dasharray="2 3"/>`;
+  }
+  [0, Math.floor((n - 1) / 2), n - 1].forEach(i => {
+    const anchor = i === 0 ? "start" : (i === n - 1 ? "end" : "middle");
+    labels += `<text x="${X(i)}" y="${H - 5}" text-anchor="${anchor}">${esc(dates[i])}</text>`;
+  });
+  let polys = "";
+  series.forEach(s => {
+    const pts = s.values.map((v, i) => `${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(" ");
+    polys += `<polyline points="${pts}" fill="none" stroke="${s.color}"
+      stroke-width="${s.width || 2}" stroke-linejoin="round"/>`;
+  });
+  const uid = "c" + Math.random().toString(36).slice(2, 8);
+  box.innerHTML = `
+  <svg id="${uid}" width="100%" viewBox="0 0 ${W} ${H}" style="display:block">
+    ${grid}${labels}${polys}
+    <line class="xh" x1="0" y1="${pad.t}" x2="0" y2="${H - pad.b}"
+      stroke="var(--text-muted)" stroke-width="1" stroke-dasharray="3 3" opacity="0"/>
+  </svg>`;
+  const svg = document.getElementById(uid);
+  const xh = svg.querySelector(".xh");
+  svg.addEventListener("mousemove", ev => {
+    const rect = svg.getBoundingClientRect();
+    const mx = (ev.clientX - rect.left) * (W / rect.width);
+    let i = Math.round((mx - pad.l) / (W - pad.l - pad.r) * (n - 1));
+    i = Math.max(0, Math.min(n - 1, i));
+    const px = X(i);
+    xh.setAttribute("x1", px); xh.setAttribute("x2", px); xh.setAttribute("opacity", "1");
+    const rows = series.map(s =>
+      `<span class="sw" style="background:${s.color}"></span>` +
+      `${esc(s.name)}: <b>${yFmt(s.values[i] == null ? 0 : s.values[i])}</b>`).join("<br>");
+    tip.innerHTML = `<span class="t">${esc(dates[i])}</span><br>${rows}`;
+    tip.style.display = "block";
+    const wrapRect = wrap.getBoundingClientRect();
+    let tx = (px / W) * rect.width + 12;
+    if (tx + tip.offsetWidth > wrapRect.width - 8) tx -= tip.offsetWidth + 24;
+    tip.style.left = tx + "px"; tip.style.top = "10px";
+  });
+  svg.addEventListener("mouseleave", () => {
+    xh.setAttribute("opacity", "0"); tip.style.display = "none";
+  });
+}
+
+/* -------------------------------------------- tiny markdown renderer */
+function mdToHtml(md) {
+  const lines = esc(md).split("\n");
+  let html = "", inTable = false, inList = false;
+  const closeAll = () => {
+    if (inTable) { html += "</table>"; inTable = false; }
+    if (inList) { html += "</ul>"; inList = false; }
+  };
+  const inline = s => s.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+                       .replace(/`(.+?)`/g, "<code>$1</code>");
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (/^\|/.test(line)) {
+      const cells = line.split("|").slice(1, -1).map(c => c.trim());
+      if (cells.every(c => /^-+$/.test(c))) continue;
+      if (!inTable) { html += "<table>"; inTable = true;
+        html += "<tr>" + cells.map(c => `<th>${inline(c)}</th>`).join("") + "</tr>";
+      } else {
+        html += "<tr>" + cells.map(c => `<td>${inline(c)}</td>`).join("") + "</tr>";
+      }
+      continue;
+    }
+    if (/^- /.test(line)) {
+      if (inTable) { html += "</table>"; inTable = false; }
+      if (!inList) { html += "<ul>"; inList = true; }
+      html += `<li>${inline(line.slice(2))}</li>`; continue;
+    }
+    closeAll();
+    if (/^## /.test(line)) html += `<h2>${inline(line.slice(3))}</h2>`;
+    else if (/^# /.test(line)) html += `<h1>${inline(line.slice(2))}</h1>`;
+    else if (line) html += `<p>${inline(line)}</p>`;
+  }
+  closeAll();
+  return html;
+}
+
+/* --------------------------------------------------------- history */
+async function loadHistory() {
+  try { historyCache = await api("/api/runs?limit=30"); } catch (e) { return; }
+  renderHistory();
+}
+function marketLabel(source) {
+  const mk = marketsCache.find(x => x.source === source);
+  if (mk) return lang === "zh" ? mk.label_zh : mk.label_en;
+  return source || "–";
+}
+function renderHistory() {
+  const box = $("historyBox");
+  if (!box) return;
+  const wanted = view === "strategy" ? "strategy" : "factor";
+  const rows_data = historyCache.filter(e => (e.kind || "strategy") === wanted);
+  if (!rows_data.length) { box.innerHTML = `<div class="muted">${T().no_runs}</div>`; return; }
+  const isStrategy = wanted === "strategy";
+  const rows = rows_data.map(e => {
+    const m = e.metrics || {};
+    let perf = "–";
+    if (isStrategy) {
+      if (m.sharpe_ratio != null) {
+        const v = m.sharpe_ratio;
+        perf = `<span style="color:${v >= 0 ? "var(--good)" : "var(--serious)"}">${v.toFixed(2)}</span>`;
+      }
+    } else if (m.ic_mean != null) {
+      perf = Number(m.ic_mean).toFixed(4);
+    }
+    return `<tr class="clickable" data-run="${esc(e.run_id)}">
+      <td>${esc((e.logged_at || "").slice(5, 16))}</td>
+      <td style="text-align:left">${esc(e.task_name || e.run_id)}</td>
+      <td style="text-align:left">${esc(marketLabel(e.data_source))}</td>
+      <td style="text-align:left">${esc(e.universe || "–")}</td>
+      <td>${perf}</td></tr>`;
+  }).join("");
+  box.innerHTML = `<div style="overflow-x:auto"><table class="list"><tr>
+    <th>${T().col_time}</th><th>${T().col_run}</th><th>${T().col_market}</th>
+    <th>${T().col_universe}</th><th>${isStrategy ? T().col_sharpe : T().col_ic}</th></tr>
+    ${rows}</table></div>`;
+  box.querySelectorAll("tr.clickable").forEach(tr => {
+    tr.onclick = () => openRun(tr.dataset.run, true);
+  });
+}
+async function openRun(runId, scroll) {
+  const d = await api("/api/runs/" + encodeURIComponent(runId));
+  lastResult = {
+    ok: true, run_id: d.run_id, kind: d.kind || "strategy",
+    metrics: (d.summary || {}).metrics || {},
+    num_trades: (d.summary || {}).num_trades,
+    factor: d.factor || {},
+    risk: d.risk || {},
+    report_markdown: d.report_markdown || "",
+    has_html_report: d.has_html_report,
+    validation: d.validation || null,
+    task_yaml: d.task_yaml || ""
+  };
+  if (view !== "strategy" && view !== "factor") {
+    view = lastResult.kind === "factor" ? "factor" : "strategy";
+    localStorage.setItem("vq_view", view);
+    applyChrome();
+  } else renderResult(lastResult);
+  if (scroll) window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+/* ----------------------------------------------------------- deploy */
+async function loadDeployments() {
+  try { deploymentsCache = await api("/api/deployments"); } catch (e) { return; }
+  const box = $("deployListBox");
+  const t = T();
+  if (!deploymentsCache.length) {
+    box.innerHTML = `<div class="muted">${t.no_items}</div>`; return;
+  }
+  box.innerHTML = deploymentsCache.map(d => `
+    <div class="suggestion" style="cursor:default">
+      <div class="t">${esc(d.name)}
+        <span class="badge ${d.enabled ? "on" : "off"}">${d.enabled ? t.dep_on : t.dep_off}</span>
+        <span class="muted">${esc(d.run_at)} Asia/Shanghai</span></div>
+      <div class="m">${esc(d.id)} · email: ${esc(d.email_to || "–")} ·
+        last: ${esc(d.last_run_date || "–")}</div>
+      <div class="m">${esc(d.last_status || "")}</div>
+      <div class="m">${(d.last_signals || []).map(s =>
+        `${esc(s.symbol)} <b>${esc(s.action)}</b>`).join(" · ")}</div>
+      <div class="row">
+        <button data-act="run" data-id="${esc(d.id)}">${t.dep_run}</button>
+        <button data-act="toggle" data-id="${esc(d.id)}">${d.enabled ? t.dep_off : t.dep_on}</button>
+        <button class="danger" data-act="del" data-id="${esc(d.id)}">${t.dep_del}</button>
+      </div>
+    </div>`).join("");
+  box.querySelectorAll("button[data-act]").forEach(b => {
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        if (b.dataset.act === "run") {
+          const out = await postJson(`/api/deployments/${b.dataset.id}/run`, {});
+          $("deploySignalsCard").style.display = "";
+          $("deploySignals").textContent = out.report || JSON.stringify(out, null, 2);
+        } else if (b.dataset.act === "toggle") {
+          await postJson(`/api/deployments/${b.dataset.id}/toggle`, {});
+        } else {
+          await api(`/api/deployments/${b.dataset.id}`, { method: "DELETE" });
+        }
+        await loadDeployments();
+      } catch (e) { alert(e.message); }
+      finally { b.disabled = false; }
+    };
+  });
+}
+$("deployCreateBtn").onclick = async () => {
+  await withSpin("deployCreateBtn", "deploySpin", "deployError", async () => {
+    await postJson("/api/deployments", {
+      yaml_text: $("deployYaml").value,
+      email_to: $("deployEmail").value.trim(),
+      run_at: $("deployTime").value.trim() || "16:30",
+    });
+    await loadDeployments();
+  });
+};
+
+/* --------------------------------------------------------- settings */
+async function loadLLMConfig() {
+  try {
+    const c = await api("/api/llm/config");
+    $("llmStatus").innerHTML = c.configured
+      ? `<span class="ok">✓ ${T().llm_configured}: ${esc(c.model)} @ ${esc(c.base_url)}
+         (key ${esc(c.api_key_masked)})</span>`
+      : `<span class="muted">${T().llm_not_configured}</span>`;
+    if (c.configured) { $("llmModel").value = c.model; $("llmBaseUrl").value = c.base_url; }
+    $("llmHint").textContent = c.configured ? T().llm_on : T().llm_off;
+  } catch (e) {}
+}
+$("llmSaveBtn").onclick = async () => {
+  await withSpin("llmSaveBtn", "llmSpin", null, async () => {
+    try {
+      await postJson("/api/llm/config", {
+        model: $("llmModel").value, api_key: $("llmApiKey").value,
+        base_url: $("llmBaseUrl").value });
+      $("llmResult").innerHTML = `<span class="ok">saved</span>`;
+      await loadLLMConfig();
+    } catch (e) { $("llmResult").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  });
+};
+$("llmTestBtn").onclick = async () => {
+  await withSpin("llmTestBtn", "llmSpin", null, async () => {
+    const r = await postJson("/api/llm/test", {});
+    $("llmResult").innerHTML = r.ok
+      ? `<span class="ok">✓ ${esc(r.model)} replied "${esc(r.reply)}" in ${r.latency_s}s</span>`
+      : `<span class="err">✗ ${esc(r.error || "failed")}</span>`;
+  });
+};
+
+/* ------------------------------------------------------------ boot */
+loadMarkets();
+applyChrome();
+loadHistory();
+loadLLMConfig();
+</script>
+</body>
+</html>

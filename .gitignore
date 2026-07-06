@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+workspace/
+build/
+dist/
+config/llm.yaml
+config/email.yaml
+data/raw/
+data/factors/

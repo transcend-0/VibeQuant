@@ -1,0 +1,21 @@
+# RSI 超卖反弹策略示例（中文报告）。
+# 运行:  vq run tasks/rsi_demo_zh.yaml
+name: rsi-超卖反弹示例
+intent: "RSI 超卖买入、超买卖出，合成数据演示"
+data:
+  source: synthetic
+  symbols: [DEMO]
+  start: "2022-01-01"
+  end: "2024-12-31"
+  seed: 7
+strategy:
+  name: rsi_reversion
+  params:
+    period: 14
+    oversold: 30
+    overbought: 70
+execution:
+  mode: backtest
+  initial_cash: 500000
+report:
+  language: zh

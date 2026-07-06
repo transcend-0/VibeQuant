@@ -1,0 +1,23 @@
+# Dual moving-average crossover on deterministic synthetic data.
+# Run:  vq run tasks/ma_cross_demo.yaml
+name: ma-cross-demo
+intent: "5/20 MA crossover baseline demo on synthetic data"
+data:
+  source: synthetic
+  symbols: [DEMO]
+  start: "2022-01-01"
+  end: "2024-12-31"
+  seed: 42
+strategy:
+  name: ma_cross
+  params:
+    fast: 5
+    slow: 20
+risk:
+  max_position_pct: 0.9
+  max_drawdown_pct: 25.0
+execution:
+  mode: backtest
+  initial_cash: 1000000
+report:
+  language: en

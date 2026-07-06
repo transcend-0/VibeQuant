@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibequant"
+version = "0.1.0"
+description = "Intent-driven quant research on top of akquant: prompt/YAML -> DSL -> planner -> tools -> akquant adapter -> report/memory"
+requires-python = ">=3.11"
+dependencies = [
+    "akquant>=0.2",
+    "pandas>=2.0",
+    "PyYAML>=6.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+
+[project.optional-dependencies]
+akshare = ["akshare"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+vq = "src.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["src*", "webui*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

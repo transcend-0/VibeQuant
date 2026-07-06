@@ -1,0 +1,8 @@
+# Copy to config/email.yaml and fill in to enable signal emails.
+# Example below is for QQ mail; any SMTP provider works.
+smtp_host: "smtp.qq.com"
+smtp_port: 465
+use_ssl: true
+username: "yourname@qq.com"
+password: "your-smtp-auth-code"   # QQ/163 use an auth code, not the login password
+from_addr: "yourname@qq.com"
