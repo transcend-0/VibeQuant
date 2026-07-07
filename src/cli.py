@@ -18,7 +18,7 @@ from pathlib import Path
 
 from .config import workspace_dir
 from .dsl import TaskSpec
-from .intent import parse_prompt
+from .intent import IntentError, parse_prompt
 from .memory import MemoryStore
 from .planner import make_plan
 from .runner import run_task
@@ -38,7 +38,10 @@ def _print_result(result) -> None:
 
 
 def cmd_ask(args) -> None:
-    parsed = parse_prompt(args.prompt)
+    try:
+        parsed = parse_prompt(args.prompt)
+    except IntentError as exc:
+        sys.exit(f"❌ {exc}")
     spec = parsed.spec
     lang = spec.report.language
 

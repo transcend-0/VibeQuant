@@ -34,14 +34,18 @@ from src import live as live_mod
 from src.config import raw_data_dir, workspace_dir
 from src.dsl import DSLError, TaskSpec
 from src.factors.registry import list_factors
-from src.intent import parse_prompt
-from src.llm import get_client, load_llm_config, save_llm_config, test_connection
+from src.intent import IntentError, parse_prompt
+from src.llm import LLMError, get_client, load_llm_config, save_llm_config, test_connection
 from src.memory import MemoryStore
 from src.planner import make_plan
 from src.research import ingest_source
-from src.research.ingest import IngestError
-from src.research.llm_ideas import llm_extract_ideas
-from src.research.tasks import DEFAULT_ETF_UNIVERSE, idea_to_taskspec
+from src.research.ingest import Idea, IngestError
+from src.research.llm_ideas import IdeaExtractionError, llm_extract_ideas
+from src.research.tasks import (
+    DEFAULT_ETF_UNIVERSE,
+    extract_universe_hint,
+    idea_to_taskspec,
+)
 from src.runner import run_task
 from src.strategies import REGISTRY
 
@@ -214,24 +218,31 @@ def _plan_payload(spec: TaskSpec) -> List[Dict[str, str]]:
 
 def _brief_payload(brief, req_mode: str, universe, start, end, language):
     """Brief + a ready-to-run task suggestion per extracted idea."""
+
+    def _build(idea, mode, intent):
+        return idea_to_taskspec(
+            idea,
+            mode=mode,
+            universe=universe,
+            start=start or "2021-01-01",
+            end=end or "2024-12-31",
+            language=language,
+            intent=intent,
+        )
+
     suggestions = []
     for idea in brief.ideas:
         # suggestions strictly match the requesting research mode
         mode = req_mode
         if mode == "factor" and not idea.factor_expressions:
             continue
-        if mode == "strategy" and not idea.strategy_name:
+        # a factor idea with real expressions is still usable in strategy
+        # mode -- idea_to_taskspec bridges it into a factor_rotation
+        # rather than being silently dropped for lacking a strategy_name.
+        if mode == "strategy" and not idea.strategy_name and not idea.factor_expressions:
             continue
         try:
-            spec = idea_to_taskspec(
-                idea,
-                mode=mode,
-                universe=universe,
-                start=start or "2021-01-01",
-                end=end or "2024-12-31",
-                language=language,
-                intent=f"[{brief.source_type}] {brief.title[:120]}",
-            )
+            spec = _build(idea, mode, f"[{brief.source_type}] {brief.title[:120]}")
         except DSLError:
             continue
         suggestions.append(
@@ -242,6 +253,49 @@ def _brief_payload(brief, req_mode: str, universe, start, end, language):
                 "plan": _plan_payload(spec),
             }
         )
+
+    # "利用研报中的因子构建一个多因子策略": combine every extracted factor
+    # idea's expressions into ONE multi-factor rotation, in addition to the
+    # per-idea single-factor suggestions above.
+    if req_mode == "strategy":
+        seen_names = set()
+        all_exprs = []
+        for idea in brief.ideas:
+            for e in idea.factor_expressions:
+                name = e.split("=", 1)[0].strip() if "=" in e else e
+                if name in seen_names:
+                    continue  # multiple ideas often propose the same factor
+                seen_names.add(name)
+                all_exprs.append(e)
+        if len(all_exprs) >= 2:
+            combined = Idea(
+                key="combined-factors",
+                kind="strategy",
+                title_en="Combined multi-factor rotation",
+                title_zh="组合多因子轮动",
+                evidence=[i.title_en for i in brief.ideas if i.factor_expressions],
+                strategy_name="factor_rotation",
+                strategy_params={
+                    "expressions": all_exprs,
+                    "top_k": 5,
+                    "rebalance_days": 20,
+                },
+            )
+            try:
+                spec = _build(
+                    combined, "strategy",
+                    f"[{brief.source_type}] {brief.title[:120]} (combined factors)",
+                )
+            except DSLError:
+                pass
+            else:
+                suggestions.insert(0, {
+                    "idea": combined.to_dict(),
+                    "mode": "strategy",
+                    "yaml": spec.to_yaml(),
+                    "plan": _plan_payload(spec),
+                })
+
     payload = brief.to_dict()
     payload["suggestions"] = suggestions
     payload["default_universe"] = DEFAULT_ETF_UNIVERSE
@@ -301,7 +355,10 @@ def factor_presets() -> List[Dict[str, str]]:
 def parse(req: ParseRequest) -> Dict[str, Any]:
     if not req.prompt.strip():
         raise HTTPException(status_code=422, detail="empty prompt")
-    parsed = parse_prompt(req.prompt)
+    try:
+        parsed = parse_prompt(req.prompt)
+    except IntentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "task": parsed.spec.to_dict(),
         "yaml": parsed.spec.to_yaml(),
@@ -311,21 +368,42 @@ def parse(req: ParseRequest) -> Dict[str, Any]:
     }
 
 
-async def _maybe_llm_ideas(brief) -> None:
-    """Upgrade rule-based ideas with LLM extraction when configured."""
+async def _llm_ideas(brief) -> Optional[List[str]]:
+    """Extract candidate ideas from the brief's text via the LLM (required).
+
+    Also derives a universe/symbols override from any accompanying user
+    instruction (e.g. "只用600519和600036" typed alongside a pasted paper
+    link) — returns that hint (None if the instruction named nothing
+    specific), so the caller can prefer it over its own default.
+    """
     client = get_client()
-    if client is None or not brief.text:
-        return
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="LLM not configured — set up config/llm.yaml to extract ideas.",
+        )
+    if not brief.text:
+        return None
     try:
         ideas = await asyncio.to_thread(llm_extract_ideas, brief.text, client)
-    except Exception as exc:
-        logger.warning("LLM extraction failed, using rules: %s", exc)
-        return
+    except IdeaExtractionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    brief.ideas = ideas
     if ideas:
-        brief.ideas = ideas
         brief.notes.append(f"ideas extracted by LLM ({client.model_name})")
     else:
-        brief.notes.append("LLM returned no usable ideas; using keyword rules")
+        brief.notes.append("LLM found no usable ideas in this text")
+
+    universe_hint = None
+    if brief.user_instruction:
+        universe_hint = await asyncio.to_thread(
+            extract_universe_hint, brief.user_instruction, client
+        )
+        if universe_hint:
+            brief.notes.append(
+                f"universe set from your instruction ({len(universe_hint)} symbols)"
+            )
+    return universe_hint
 
 
 @app.post("/api/ingest")
@@ -338,9 +416,10 @@ async def ingest(req: IngestRequest) -> Dict[str, Any]:
         raise HTTPException(
             status_code=502, detail=f"failed to fetch source: {exc}"
         ) from exc
-    await _maybe_llm_ideas(brief)
+    universe_hint = await _llm_ideas(brief)
     return _brief_payload(
-        brief, req.mode, req.universe, req.start, req.end, req.language
+        brief, req.mode, req.universe or universe_hint, req.start, req.end,
+        req.language,
     )
 
 
@@ -351,6 +430,7 @@ async def ingest_pdf(
     language: str = Form("en"),
     start: str = Form("2021-01-01"),
     end: str = Form("2024-12-31"),
+    question: str = Form(""),
 ) -> Dict[str, Any]:
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=422, detail="only .pdf uploads supported")
@@ -359,12 +439,12 @@ async def ingest_pdf(
         raise HTTPException(status_code=422, detail="PDF larger than 30 MB")
     try:
         brief = await asyncio.to_thread(
-            ingest_source, "", content, file.filename or "uploaded.pdf"
+            ingest_source, "", content, file.filename or "uploaded.pdf", question
         )
     except IngestError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    await _maybe_llm_ideas(brief)
-    return _brief_payload(brief, mode, None, start, end, language)
+    universe_hint = await _llm_ideas(brief)
+    return _brief_payload(brief, mode, universe_hint, start, end, language)
 
 
 @app.post("/api/run")
@@ -627,6 +707,8 @@ async def refine(req: RefineRequest) -> Dict[str, Any]:
         )
     except DSLError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     try:
         spec = TaskSpec.from_yaml(out["yaml"])
         out["plan"] = _plan_payload(spec)
@@ -758,3 +840,5 @@ async def auto_optimize_endpoint(req: AutoOptimizeRequest) -> Dict[str, Any]:
             )
     except DSLError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

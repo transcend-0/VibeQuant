@@ -9,11 +9,35 @@ data:
   end: "2024-12-31"
   seed: 7
 strategy:
-  name: rsi_reversion
+  name: custom
   params:
-    period: 14
-    oversold: 30
-    overbought: 70
+    warmup: 15
+    source: |
+      def _rsi(closes, period):
+          window = closes[-(period + 1):]
+          gains = losses = 0.0
+          for prev, cur in zip(window, window[1:]):
+              delta = cur - prev
+              if delta >= 0:
+                  gains += delta
+              else:
+                  losses -= delta
+          if losses == 0:
+              return 100.0
+          rs = (gains / period) / (losses / period)
+          return 100.0 - 100.0 / (1.0 + rs)
+
+
+      def signal(closes, position):
+          period, oversold, overbought = 14, 30, 70
+          if len(closes) < period + 1:
+              return None
+          rsi = _rsi(closes, period)
+          if position <= 0 and rsi < oversold:
+              return 1.0
+          if position > 0 and rsi > overbought:
+              return 0.0
+          return None
 execution:
   mode: backtest
   initial_cash: 500000

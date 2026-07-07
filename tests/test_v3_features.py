@@ -17,6 +17,7 @@ from src.live.deploy import (  # noqa: E402
     create_deployment,
     list_deployments,
 )
+from src.adapters.akquant_factor import known_expression_functions  # noqa: E402
 from src.research.llm_ideas import _expression_valid, _strip_fence  # noqa: E402
 
 
@@ -81,6 +82,15 @@ def test_llm_expression_validator():
     assert not _expression_valid("PE = Earnings / Price")  # unknown columns
 
 
+def test_llm_expression_validator_uses_akquants_full_grammar():
+    # the allow-list is sourced from akquant's real OPS_MAP (adapters layer),
+    # not a hand-typed subset — aliases beyond the original hardcoded list
+    # must be accepted too.
+    assert "Standardize" in known_expression_functions()
+    assert _expression_valid("Z = Standardize(Close)")
+    assert _expression_valid("M = Mean(Close, 10)")  # alias for Ts_Mean
+
+
 def test_llm_strip_fence():
     assert _strip_fence('```json\n[{"a":1}]\n```') == '[{"a":1}]'
     assert _strip_fence('[{"a":1}]') == '[{"a":1}]'
@@ -117,7 +127,7 @@ def test_deployment_requires_strategy_and_real_data(tmp_path, monkeypatch):
         "kind: strategy\n"
         "name: t\n"
         "data: {source: etf, symbols: [510300], start: '2023-01-01'}\n"
-        "strategy: {name: ma_cross}\n",
+        "strategy: {name: custom, params: {source: \"def signal(closes, position):\\n    return None\\n\"}}\n",
         email_to="a@b.c",
         run_at="16:30",
     )
@@ -126,7 +136,8 @@ def test_deployment_requires_strategy_and_real_data(tmp_path, monkeypatch):
 
 
 def test_compute_signals_actions():
-    # synthetic source keeps this offline; compute_signals accepts any spec
+    # synthetic source keeps this offline; compute_signals accepts any spec.
+    # no fixed buy_hold template anymore (round 14) -- same logic as custom.
     spec = TaskSpec.from_dict(
         {
             "kind": "strategy",
@@ -136,14 +147,20 @@ def test_compute_signals_actions():
                 "start": "2023-01-01",
                 "end": "2024-06-28",
             },
-            "strategy": {"name": "buy_hold"},
+            "strategy": {
+                "name": "custom",
+                "params": {
+                    "source": "def signal(closes, position):\n"
+                    "    return 1.0 if position <= 0 else None\n",
+                },
+            },
         }
     )
     signals = compute_signals(spec)
     assert len(signals) == 1
     sig = signals[0]
     assert sig["action"] in ("BUY", "SELL", "HOLD", "STAY_FLAT")
-    assert sig["position"] == 1.0  # buy_hold always ends long
+    assert sig["position"] == 1.0  # buy-and-hold always ends long
     assert sig["last_close"] > 0
 
 

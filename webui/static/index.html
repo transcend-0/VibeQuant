@@ -156,6 +156,10 @@ pre.sig { background: var(--surface-0); border: 1px solid var(--border); border-
       <button class="primary" id="analyzeBtn" data-i18n="analyze_btn"></button>
       <button id="pdfBtn" data-i18n="pdf_btn"></button>
       <input type="file" id="pdfFile" accept=".pdf" style="display:none">
+      <span class="badge" id="pdfChip" style="display:none">
+        📎 <span id="pdfChipName"></span>
+        <a href="#" id="pdfChipRemove" style="margin-left:6px">✕</a>
+      </span>
       <span class="spin" id="analyzeSpin" data-i18n="analyzing"></span>
     </div>
     <div class="muted" id="llmHint" style="margin-top:6px"></div>
@@ -437,11 +441,11 @@ const I18N = {
     deploy_signals_title: "Latest signal report",
     deploy_email_note: "Email needs config/email.yaml (see config/email.example.yaml). Without it, signals are archived under workspace/signals/ and shown here.",
     dep_run: "run now", dep_del: "delete", dep_on: "on", dep_off: "off",
-    llm_title: "LLM API (optional)",
-    llm_explain: "OpenAI-compatible endpoint used to extract research ideas from papers/URLs. Everything falls back to keyword rules when unset.",
+    llm_title: "LLM API (required)",
+    llm_explain: "OpenAI-compatible endpoint used to parse intent, extract research ideas, and refine/auto-optimize tasks. Required — there is no rule-based fallback; requests fail clearly when this is unset or unreachable.",
     llm_save: "Save", llm_test: "Test connection",
-    llm_configured: "configured", llm_not_configured: "not configured — using rule-based extraction",
-    llm_on: "LLM idea extraction: on", llm_off: "LLM idea extraction: off (rules)",
+    llm_configured: "configured", llm_not_configured: "not configured — parsing, ingestion, refine and auto-optimize will error",
+    llm_on: "LLM: connected", llm_off: "LLM: not configured",
     email_title: "Signal email (optional)",
     email_explain: "Create config/email.yaml from config/email.example.yaml (SMTP host, account, auth code). Deployments email through it; without it they archive to files.",
     f_market: "Market", auto_btn: "Agent auto-optimize",
@@ -449,6 +453,8 @@ const I18N = {
     auto_best: "best round loaded into the task editor",
     sbuilder_title: "Strategy workbench",
     s_universe: "Universe", s_template: "Strategy template", s_params: "Params (JSON)",
+    tpl_rule: "Rule-based", tpl_factor: "Multi-factor rotation",
+    tpl_ml: "Machine learning", tpl_custom: "Custom free-form",
     f_maxpos: "max_position (×ADV20)", f_maxtrade: "max_trade (×ADV20)",
     refine_btn: "Ask to optimize", refine_ph: "e.g. try industry neutralization; why is drawdown so large?",
     th_cls: "LS (capped)", th_turn: "turnover",
@@ -518,11 +524,11 @@ const I18N = {
     deploy_signals_title: "最新信号报告",
     deploy_email_note: "发邮件需配置 config/email.yaml（参考 config/email.example.yaml）。未配置时信号会存档到 workspace/signals/ 并显示在此。",
     dep_run: "立即运行", dep_del: "删除", dep_on: "启用", dep_off: "停用",
-    llm_title: "LLM API（可选）",
-    llm_explain: "OpenAI 兼容接口，用于从论文/网页中提取研究想法。未配置时回退到关键词规则。",
+    llm_title: "LLM API（必需）",
+    llm_explain: "OpenAI 兼容接口，用于意图解析、从论文/网页中提取研究想法、以及优化建议。必须配置——没有规则回退，未配置或不可达时请求会明确报错。",
     llm_save: "保存", llm_test: "测试连接",
-    llm_configured: "已配置", llm_not_configured: "未配置——使用规则提取",
-    llm_on: "LLM 想法提取：已启用", llm_off: "LLM 想法提取：未启用（规则）",
+    llm_configured: "已配置", llm_not_configured: "未配置——解析、研究提取、优化建议将会报错",
+    llm_on: "LLM：已连接", llm_off: "LLM：未配置",
     email_title: "信号邮件（可选）",
     email_explain: "参考 config/email.example.yaml 创建 config/email.yaml（SMTP 服务器、账号、授权码）。配置后部署会自动发信，否则信号存档为文件。",
     f_market: "市场 Market", auto_btn: "Agent 自动迭代",
@@ -530,6 +536,8 @@ const I18N = {
     auto_best: "最优轮次已载入任务编辑器",
     sbuilder_title: "策略工作台",
     s_universe: "标的池 Universe", s_template: "策略模板", s_params: "参数（JSON）",
+    tpl_rule: "规则策略", tpl_factor: "多因子轮动",
+    tpl_ml: "机器学习", tpl_custom: "自定义",
     f_maxpos: "max_position（×ADV20 成交额）", f_maxtrade: "max_trade（×ADV20 成交额）",
     refine_btn: "追问优化", refine_ph: "例如：试试行业中性化；为什么回撤这么大？",
     th_cls: "多空(限仓)", th_turn: "换手",
@@ -580,10 +588,23 @@ async function api(path, opts) {
 const postJson = (p, body) => api(p, { method: "POST",
   headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
 async function withSpin(btnId, spinId, errId, fn) {
-  $(btnId).disabled = true; $(spinId).style.display = "inline";
+  $(btnId).disabled = true;
+  const spin = $(spinId);
+  const baseLabel = spin.textContent; // e.g. "分析中…" -- some of these can
+  spin.style.display = "inline";      // run for minutes on a real PDF, so
+  const t0 = Date.now();               // show elapsed time, not just a static spinner
+  const tick = () => {
+    spin.textContent = `${baseLabel} (${Math.floor((Date.now() - t0) / 1000)}s)`;
+  };
+  tick();
+  const timer = setInterval(tick, 1000);
   if (errId) $(errId).textContent = "";
   try { await fn(); } catch (e) { if (errId) $(errId).textContent = e.message; }
-  finally { $(btnId).disabled = false; $(spinId).style.display = "none"; }
+  finally {
+    clearInterval(timer);
+    spin.textContent = baseLabel;
+    $(btnId).disabled = false; spin.style.display = "none";
+  }
 }
 
 /* ---------------------------------------------------- view switching */
@@ -633,6 +654,58 @@ function renderExamples() {
 
 /* ------------------------------------------------------- universes */
 let marketsCache = [], strategiesCache = [];
+
+// Only two backend templates exist now: factor_rotation (cross-sectional)
+// and custom (everything else, LLM/hand-authored Python). The workbench
+// still shows 4 conceptual entry points for a human filling out this
+// form -- "规则策略"/"机器学习"/"自定义" all map to strategy.name="custom"
+// under the hood, distinguished only by which default params.source
+// skeleton they start from.
+const RULE_SKELETON = `def signal(closes, position):
+    # closes: chronological closes up to and including today (list[float])
+    # position: current QUANTITY held for this symbol (0 if flat -- not a
+    # weight or percentage); return a new TARGET WEIGHT in [0, 1], or None
+    # to leave it unchanged (note the input/output units differ).
+    if len(closes) < 21:
+        return None
+    fast = sum(closes[-5:]) / 5
+    slow = sum(closes[-20:]) / 20
+    fast_prev = sum(closes[-6:-1]) / 5
+    slow_prev = sum(closes[-21:-1]) / 20
+    if fast_prev <= slow_prev and fast > slow:
+        return 1.0  # golden cross -> long
+    if fast_prev >= slow_prev and fast < slow:
+        return 0.0  # death cross -> flat
+    return None
+`;
+const ML_SKELETON = `import numpy as np
+
+
+def signal(closes, position):
+    # closes: chronological closes up to and including today (list[float])
+    # position: current QUANTITY held (0 if flat -- not a weight)
+    # return a new target weight in [0, 1], or None to leave it unchanged.
+    if len(closes) < 30:
+        return None
+    returns = np.diff(closes) / closes[:-1]
+    x, y = returns[:-1], returns[1:]
+    slope, intercept = np.polyfit(x, y, 1)
+    pred = intercept + slope * returns[-1]
+    return 1.0 if pred > 0 else 0.0
+`;
+const STRAT_TEMPLATE_GROUPS = [
+  { value: "rule", real: "custom", labelKey: "tpl_rule",
+    defaults: { source: RULE_SKELETON, warmup: 21 } },
+  { value: "factor", real: "factor_rotation", labelKey: "tpl_factor" },
+  { value: "ml", real: "custom", labelKey: "tpl_ml",
+    defaults: { source: ML_SKELETON, warmup: 30 } },
+  { value: "custom", real: "custom", labelKey: "tpl_custom" },
+];
+function stratTemplateGroup() {
+  return STRAT_TEMPLATE_GROUPS.find(g => g.value === $("stratTemplate").value)
+    || STRAT_TEMPLATE_GROUPS[0];
+}
+
 async function loadMarkets() {
   try {
     marketsCache = await api("/api/markets");
@@ -640,8 +713,8 @@ async function loadMarkets() {
   } catch (e) { return; }
   fillMarketSelect($("marketSelect"), "cn_etf");
   fillMarketSelect($("stratMarketSelect"), "cn_etf");
-  $("stratTemplate").innerHTML = strategiesCache.map(t =>
-    `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join("");
+  $("stratTemplate").innerHTML = STRAT_TEMPLATE_GROUPS.map(g =>
+    `<option value="${g.value}">${esc(T()[g.labelKey])}</option>`).join("");
   syncMarket("factor"); syncMarket("strat"); syncStratTemplate();
   $("marketSelect").onchange = () => syncMarket("factor");
   $("stratMarketSelect").onchange = () => syncMarket("strat");
@@ -697,11 +770,34 @@ function marketSource(which) {
   return (mk && mk.source) || "etf";
 }
 function syncStratTemplate() {
-  const t = strategiesCache.find(x => x.name === $("stratTemplate").value);
+  const g = stratTemplateGroup();
+  if (g.defaults) {  // "机器学习": a skeleton distinct from the bare "custom" default
+    $("stratParams").value = JSON.stringify(g.defaults);
+    return;
+  }
+  const t = strategiesCache.find(x => x.name === g.real);
   if (t) $("stratParams").value = JSON.stringify(t.defaults || {});
 }
 
 /* strategy workbench -> YAML */
+// params values are numbers, arrays of expression strings (factor_rotation),
+// or multi-line Python source (custom/ML) -- naive `${v}` interpolation
+// corrupts all but plain numbers (a bare multi-line string breaks YAML
+// structure outright; an array stringifies to a comma join with no
+// quoting/brackets), so values need real YAML-safe serialization.
+function yamlParamValue(v, contIndent) {
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v)) {
+    return "[" + v.map(x =>
+      typeof x === "number" ? x : JSON.stringify(String(x))).join(", ") + "]";
+  }
+  const s = String(v);
+  if (s.includes("\n")) {
+    const pad = " ".repeat(contIndent);
+    return "|\n" + s.split("\n").map(line => line ? pad + line : "").join("\n");
+  }
+  return JSON.stringify(s); // double-quoted YAML string syntax
+}
 $("stratBuildBtn").onclick = () => {
   let params = {};
   try { params = JSON.parse($("stratParams").value || "{}"); } catch (e) {
@@ -709,7 +805,8 @@ $("stratBuildBtn").onclick = () => {
   }
   const symbols = $("stratSymbols").value.split(/[,，\s]+/).filter(Boolean);
   if (!symbols.length) return;
-  const paramLines = Object.entries(params).map(([k, v]) => `    ${k}: ${v}`);
+  const paramLines = Object.entries(params).map(([k, v]) =>
+    `    ${k}: ${yamlParamValue(v, 6)}`);
   const yaml = [
     `name: strategy-${$("stratUniverseSelect").value}`,
     "kind: strategy",
@@ -721,18 +818,39 @@ $("stratBuildBtn").onclick = () => {
     `  start: "${$("stratStart").value}"`,
     `  end: "${$("stratEnd").value}"`,
     "strategy:",
-    `  name: ${$("stratTemplate").value}`,
-    ...(paramLines.length ? ["  params:", ...paramLines.map(l => "  " + l)] : []),
+    `  name: ${stratTemplateGroup().real}`,
+    ...(paramLines.length ? ["  params:", ...paramLines] : []),
     "report:", `  language: ${lang}`,
   ].join("\n");
   showTask(yaml, null, []);
 };
 
 /* --------------------------------------------------------- analyze */
+// Uploading a PDF only stages it (pendingPdfFile); no network call happens
+// until the user clicks "解析"/Analyze -- that's the single trigger point
+// for all analysis (text-only, URL/arXiv, or PDF+question).
+let pendingPdfFile = null;
+
+function setPendingPdf(file) {
+  pendingPdfFile = file;
+  $("pdfChip").style.display = file ? "inline-flex" : "none";
+  if (file) $("pdfChipName").textContent = file.name;
+}
+
 $("analyzeBtn").onclick = async () => {
   const source = $("sourceInput").value.trim();
-  if (!source) return;
+  if (!pendingPdfFile && !source) return;
   await withSpin("analyzeBtn", "analyzeSpin", "analyzeError", async () => {
+    if (pendingPdfFile) {
+      const fd = new FormData();
+      fd.append("file", pendingPdfFile);
+      fd.append("mode", view); fd.append("language", lang);
+      fd.append("start", $("startDate").value); fd.append("end", $("endDate").value);
+      fd.append("question", source);
+      const brief = await api("/api/ingest_pdf", { method: "POST", body: fd });
+      renderBrief(brief);
+      return;
+    }
     const isUrl = /^https?:\/\//i.test(source) || /arxiv\.org/i.test(source);
     // direct strategy instructions skip ingestion: try the fast parser
     // first in strategy mode; fall back to research ingestion otherwise
@@ -751,19 +869,13 @@ $("analyzeBtn").onclick = async () => {
   });
 };
 $("pdfBtn").onclick = () => $("pdfFile").click();
-$("pdfFile").onchange = async () => {
+$("pdfFile").onchange = () => {
   const file = $("pdfFile").files[0];
   if (!file) return;
-  const fd = new FormData();
-  fd.append("file", file);
-  fd.append("mode", view); fd.append("language", lang);
-  fd.append("start", $("startDate").value); fd.append("end", $("endDate").value);
-  await withSpin("pdfBtn", "analyzeSpin", "analyzeError", async () => {
-    const brief = await api("/api/ingest_pdf", { method: "POST", body: fd });
-    renderBrief(brief);
-  });
-  $("pdfFile").value = "";
+  setPendingPdf(file);
+  $("pdfFile").value = ""; // allow re-selecting the same filename later
 };
+$("pdfChipRemove").onclick = (e) => { e.preventDefault(); setPendingPdf(null); };
 
 function renderBrief(brief) {
   $("briefCard").style.display = "";

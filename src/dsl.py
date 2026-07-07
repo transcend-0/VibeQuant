@@ -43,7 +43,7 @@ class DataSpec:
 class StrategySpec:
     """Which strategy template to instantiate and with what params."""
 
-    name: str = "ma_cross"
+    name: str = "custom"
     params: Dict[str, Any] = field(default_factory=dict)
 
 

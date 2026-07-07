@@ -71,11 +71,10 @@ def warmup_bars(name: str, params: Dict[str, Any]) -> int:
 
 
 # Import concrete templates so registration runs on package import.
+# Only two remain: factor_rotation (cross-sectional, adapter-special-cased)
+# and custom (LLM-authored Python for everything else -- rule strategies,
+# ML/statistical models, anything the fixed templates used to cover).
 from . import (  # noqa: E402,F401
-    bollinger,
-    buy_hold,
+    custom,
     factor_rotation,
-    ma_cross,
-    momentum,
-    rsi_reversion,
 )

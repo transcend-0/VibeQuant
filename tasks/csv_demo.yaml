@@ -7,10 +7,20 @@ data:
   path: data/sample
   symbols: [DEMO]
 strategy:
-  name: momentum
+  name: custom
   params:
-    lookback: 20
-    threshold: 0.02
+    warmup: 21
+    source: |
+      def signal(closes, position):
+          lookback, threshold = 20, 0.02
+          if len(closes) < lookback + 1:
+              return None
+          ret = closes[-1] / closes[-1 - lookback] - 1.0
+          if position <= 0 and ret > threshold:
+              return 1.0
+          if position > 0 and ret < 0:
+              return 0.0
+          return None
 execution:
   mode: backtest
   initial_cash: 1000000

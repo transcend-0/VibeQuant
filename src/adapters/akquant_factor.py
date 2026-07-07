@@ -21,6 +21,18 @@ class FactorExprError(ValueError):
     pass
 
 
+def known_expression_functions() -> frozenset:
+    """Function names akquant's expression parser actually accepts.
+
+    Single source of truth for anything that pre-validates a factor
+    expression before it reaches the engine (e.g. LLM-proposed factor
+    ideas) — avoids hand-maintaining a second, drifting copy of this list.
+    """
+    from akquant.factor.ops import OPS_MAP
+
+    return frozenset(OPS_MAP)
+
+
 _NAME_RE = re.compile(r"^\s*([A-Za-z_][\w.-]*)\s*=\s*(.+)$")
 
 

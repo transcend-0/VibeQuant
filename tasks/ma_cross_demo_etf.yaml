@@ -8,7 +8,21 @@ data:
   symbols: [510300]
   start: "2022-01-01"
 strategy:
-  name: ma_cross
-  params: { fast: 5, slow: 20 }
+  name: custom
+  params:
+    warmup: 21
+    source: |
+      def signal(closes, position):
+          if len(closes) < 21:
+              return None
+          fast = sum(closes[-5:]) / 5
+          slow = sum(closes[-20:]) / 20
+          fast_prev = sum(closes[-6:-1]) / 5
+          slow_prev = sum(closes[-21:-1]) / 20
+          if fast_prev <= slow_prev and fast > slow:
+              return 1.0  # golden cross -> long
+          if fast_prev >= slow_prev and fast < slow:
+              return 0.0  # death cross -> flat
+          return None
 report:
   language: zh

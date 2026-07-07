@@ -25,7 +25,10 @@ from src.factors.analysis import (  # noqa: E402
     apply_factor_ops,
     constrained_long_short,
 )
-from src.research.refine import _heuristic_refine, _validate_yaml  # noqa: E402
+import json
+
+from src.research.refine import _validate_yaml, refine_task  # noqa: E402
+from src.llm import LLMError  # noqa: E402
 
 
 # --------------------------------------------------- market normalization
@@ -161,7 +164,8 @@ def test_multi_kind_sources_validate():
 
 
 # ---------------------------------------------------------------- refine
-def test_refine_heuristic_factor_progression():
+# refine_task is LLM-backed with no rule fallback (src/research/refine.py).
+def test_refine_task_llm_progression(fake_llm):
     spec = TaskSpec.from_dict(
         {
             "kind": "factor",
@@ -169,10 +173,22 @@ def test_refine_heuristic_factor_progression():
             "factor": {"expressions": ["Delta(Close, 1)"]},
         }
     )
-    out = _heuristic_refine(spec, "improve it", "en")
-    assert out["engine"] == "rules"
+    fake_llm(lambda user, system: json.dumps({
+        "explanation": "Added rank neutralization to reduce sector bias.",
+        "task_yaml": spec.to_yaml().replace(
+            "neutralization: none", "neutralization: rank"
+        ),
+    }))
+    out = refine_task(spec.to_yaml(), "improve it", language="en")
+    assert out["engine"].startswith("llm")
     revised = TaskSpec.from_yaml(out["yaml"])
-    assert revised.factor.neutralization == "rank"  # first suggestion
+    assert revised.factor.neutralization == "rank"
+
+
+def test_refine_task_raises_without_llm(fake_llm):
+    fake_llm(None)
+    with pytest.raises(LLMError):
+        refine_task("kind: strategy\ndata: {symbols: [DEMO]}\n", "improve it")
 
 
 def test_refine_validator_rejects_bad_yaml():

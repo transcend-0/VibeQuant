@@ -11,15 +11,15 @@ Configuration lives in config/llm.yaml (gitignored):
     base_url: "https://api.openai.com/v1"
 
 The execution core (engines, validation, reports) never touches the LLM;
-the research-intelligence layer (idea extraction, refine, auto-optimize)
-is LLM-driven with deterministic rule fallbacks as a DEGRADED mode, so
-callers must treat LLMError as "use the fallback", never as fatal.
+the research-intelligence layer (intent parsing, idea extraction, refine,
+auto-optimize) is LLM-required with no rule-based fallback. Callers must
+surface LLMError clearly (a 5xx to the UI), never swallow it.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional, TypeVar
 
 import yaml
 
@@ -76,7 +76,12 @@ class LLMClient:
         base_url: str,
         model_name: str,
         chat_args: Optional[Dict[str, Any]] = None,
-        timeout: float = 60.0,
+        # A real 30-page Chinese factor research report (~70k chars of
+        # dense, table-heavy pdftotext output) measured at 506s for one
+        # idea-extraction call — 60s was failing outright on exactly the
+        # documents this feature exists for. This is generous, not a
+        # guarantee: a large enough/slower document can still exceed it.
+        timeout: float = 600.0,
     ) -> None:
         try:
             from openai import OpenAI
@@ -130,6 +135,45 @@ class LLMClient:
         if return_reasoning_content:
             return text, reasoning
         return text
+
+
+_T = TypeVar("_T")
+
+
+def query_structured(
+    client: LLMClient,
+    user_prompt: str,
+    system_prompt: Optional[str],
+    parse: Callable[[str], _T],
+    max_attempts: int = 3,
+) -> _T:
+    """Query the LLM and apply `parse` to the reply, retrying on a malformed
+    or hallucinated reply — `parse` should raise ValueError with a message
+    describing what was wrong, which is fed back to the model so it can
+    self-correct on the next attempt.
+
+    LLMError (connection/auth/timeout — the model is unreachable, not
+    wrong) is NOT retried: retrying a broken `base_url` three times would
+    just make a misconfigured system fail three times slower instead of
+    failing loudly, which defeats the point of not having a fallback.
+    """
+    prompt = user_prompt
+    last_exc: Optional[ValueError] = None
+    for attempt in range(1, max_attempts + 1):
+        reply = client.query(prompt, system_prompt=system_prompt)
+        try:
+            return parse(reply)
+        except ValueError as exc:
+            last_exc = exc
+            logger.warning("LLM reply invalid (attempt %d/%d): %s", attempt, max_attempts, exc)
+            prompt = (
+                f"{user_prompt}\n\n"
+                f"Your previous reply was invalid: {exc}\n"
+                "Reply again with ONLY the corrected output in the exact "
+                "format requested — no markdown fence, no explanation."
+            )
+    assert last_exc is not None
+    raise last_exc
 
 
 def get_client() -> Optional[LLMClient]:

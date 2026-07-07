@@ -22,6 +22,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ..dsl import TaskSpec
+from ..llm import LLMError, get_client
 from ..runner import run_task
 from .refine import refine_task
 
@@ -80,6 +81,10 @@ def auto_optimize(
     workspace=None,
 ) -> Dict[str, Any]:
     """Iterate up to `rounds` times. Returns history + the best round."""
+    if get_client() is None:
+        raise LLMError(
+            "LLM not configured — set up config/llm.yaml to run auto-optimize."
+        )
     rounds = max(1, min(int(rounds), MAX_ROUNDS))
     reference = TaskSpec.from_yaml(task_yaml)  # DSLError -> caller's 422
 

@@ -1,15 +1,16 @@
 """Research input ingestion: idea text, PDF papers, arXiv links, forum URLs.
 
-    source ──► extract text ──► detect research ideas ──► candidate TaskSpecs
-               (pdftotext /       (bilingual keyword        (factor mode and/or
-                arXiv API /        rules, LLM-swappable)     strategy mode)
+    source ──► extract text ──► LLM idea extraction ──► candidate TaskSpecs
+               (pdftotext /       (src.research.llm_ideas,   (factor mode and/or
+                arXiv API /        the caller's job)          strategy mode)
                 HTML strip)
 
-Deterministic and offline-safe by design: URLs and PDFs fail gracefully
-with a clear message, and every produced idea lists the evidence (matched
-keywords) so the user can judge the mapping before running anything.
-`extract_ideas` is the LLM seam — swap it for a model call later without
-touching callers.
+`ingest_source` only turns a source into text + metadata (a `ResearchBrief`
+with `ideas=[]`); URLs and PDFs fail gracefully with a clear message.
+Turning that text into candidate ideas is the LLM's job exclusively (see
+`src.research.llm_ideas.llm_extract_ideas`) — there is no keyword-rule
+fallback, so callers must treat extraction failure as an error, not as a
+reason to degrade.
 """
 
 from __future__ import annotations
@@ -22,11 +23,13 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 _UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) VibeQuant/0.1"}
-_MAX_TEXT = 40_000  # chars kept for idea scanning
 _ARXIV_ID = re.compile(r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})(?:v\d+)?", re.I)
+_MD_LINK = re.compile(r"\[([^\]]*)\]\((https?://[^\s)]+)\)")
+_BARE_URL = re.compile(r"https?://\S+")
 
 
 class IngestError(RuntimeError):
@@ -58,6 +61,11 @@ class ResearchBrief:
     ideas: List[Idea] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
     text: str = ""  # full analyzed text; NOT serialized (LLM extractor input)
+    # any instruction typed alongside a URL/link (e.g. "只用600519和600036
+    # 构建策略" next to a pasted paper link) — NOT serialized, used by the
+    # caller to extract a universe/symbols override (see llm_ideas' sibling
+    # module research.tasks.extract_universe_hint).
+    user_instruction: str = ""
 
     def to_dict(self) -> Dict:
         return {
@@ -68,110 +76,6 @@ class ResearchBrief:
             "ideas": [i.to_dict() for i in self.ideas],
             "notes": self.notes,
         }
-
-
-# --------------------------------------------------------------- idea rules
-# Each rule: bilingual keyword patterns -> factor expressions (akquant
-# expression engine syntax) and/or a strategy template. Price/volume proxies
-# only — fundamentals aren't available on the ETF/synthetic data paths.
-_RULES = [
-    dict(
-        key="momentum",
-        kind="factor",
-        title_en="Price momentum",
-        title_zh="价格动量",
-        pattern=re.compile(r"momentum|动量|趋势跟踪|trend[\s-]?follow|12-1|相对强弱", re.I),
-        factor_expressions=[
-            "Mom20 = Delta(Close, 20) / Delay(Close, 20)",
-            "Mom60 = Delta(Close, 60) / Delay(Close, 60)",
-        ],
-        strategy_name="momentum",
-    ),
-    dict(
-        key="reversal",
-        kind="factor",
-        title_en="Short-term reversal / mean reversion",
-        title_zh="短期反转 / 均值回归",
-        pattern=re.compile(
-            r"reversal|revert|reversion|反转|均值回归|超卖|超买|oversold|overbought|contrarian",
-            re.I,
-        ),
-        factor_expressions=["Rev5 = -Delta(Close, 5) / Delay(Close, 5)"],
-        strategy_name="rsi_reversion",
-    ),
-    dict(
-        key="low_volatility",
-        kind="factor",
-        title_en="Low-volatility anomaly",
-        title_zh="低波动异象",
-        pattern=re.compile(
-            r"low[\s-]?vol|volatility|低波动|波动率|idiosyncratic|beta anomaly", re.I
-        ),
-        factor_expressions=[
-            "LowVol20 = -(Ts_Std(Close, 20) / Ts_Mean(Close, 20))"
-        ],
-    ),
-    dict(
-        key="volume",
-        kind="factor",
-        title_en="Volume / turnover signals",
-        title_zh="成交量 / 换手信号",
-        pattern=re.compile(r"volume|turnover|成交量|换手|量价|放量|liquidity|流动性", re.I),
-        factor_expressions=[
-            "PVCorr10 = Rank(Ts_Corr(Close, Volume, 10))",
-            "VolSurge = Volume / Ts_Mean(Volume, 20)",
-        ],
-    ),
-    dict(
-        key="ma_cross",
-        kind="strategy",
-        title_en="Moving-average crossover",
-        title_zh="均线交叉",
-        pattern=re.compile(r"moving\s+average|ma\s+cross|均线|金叉|死叉|sma|ema", re.I),
-        strategy_name="ma_cross",
-    ),
-    dict(
-        key="bollinger",
-        kind="strategy",
-        title_en="Bollinger band reversion",
-        title_zh="布林带回归",
-        pattern=re.compile(r"bollinger|布林|band|通道突破", re.I),
-        strategy_name="bollinger",
-    ),
-    dict(
-        key="value_note",
-        kind="factor",
-        title_en="Value / fundamentals (needs fundamental data)",
-        title_zh="价值 / 基本面（需基本面数据）",
-        pattern=re.compile(r"\bvalue\b|估值|市盈率|市净率|\bP/?E\b|\bP/?B\b|book[\s-]?to[\s-]?market|ROE", re.I),
-        factor_expressions=[],
-    ),
-]
-
-
-def extract_ideas(text: str) -> List[Idea]:
-    """Scan text for research ideas. Rule-based; the LLM seam."""
-    sample = text[:_MAX_TEXT]
-    ideas: List[Idea] = []
-    for rule in _RULES:
-        hits = rule["pattern"].findall(sample)
-        if not hits:
-            continue
-        unique = sorted({h if isinstance(h, str) else h[0] for h in hits})[:8]
-        ideas.append(
-            Idea(
-                key=rule["key"],
-                kind=rule["kind"],
-                title_en=rule["title_en"],
-                title_zh=rule["title_zh"],
-                evidence=[u for u in unique if u],
-                score=len(hits),
-                factor_expressions=list(rule.get("factor_expressions") or []),
-                strategy_name=rule.get("strategy_name"),
-            )
-        )
-    ideas.sort(key=lambda i: i.score, reverse=True)
-    return ideas
 
 
 # ------------------------------------------------------------ text sources
@@ -232,7 +136,27 @@ def _fetch(url: str) -> bytes:
         return resp.read(5_000_000)
 
 
-def _arxiv_brief(arxiv_id: str, source: str) -> ResearchBrief:
+def _split_url(source: str) -> Tuple[Optional[str], str]:
+    """Find the first URL (markdown-linked or bare) anywhere in `source`.
+
+    Returns (url_or_None, instruction) where `instruction` is `source` with
+    the link syntax collapsed to its label text (markdown) or removed
+    (bare URL) — so a sentence like "根据这篇[论文](https://...)的思路，
+    在精选24ETF上构建策略" keeps its accompanying instruction instead of
+    losing it once the URL is pulled out.
+    """
+    md = _MD_LINK.search(source)
+    if md:
+        instruction = (source[: md.start()] + md.group(1) + source[md.end():]).strip()
+        return md.group(2), instruction
+    bare = _BARE_URL.search(source)
+    if bare:
+        instruction = (source[: bare.start()] + source[bare.end():]).strip()
+        return bare.group(0), instruction
+    return None, source
+
+
+def _arxiv_brief(arxiv_id: str, source: str, instruction: str = "") -> ResearchBrief:
     raw = _fetch(f"http://export.arxiv.org/api/query?id_list={arxiv_id}")
     ns = {"a": "http://www.w3.org/2005/Atom"}
     root = ET.fromstring(raw)
@@ -241,30 +165,41 @@ def _arxiv_brief(arxiv_id: str, source: str) -> ResearchBrief:
         raise IngestError(f"arXiv id {arxiv_id} not found")
     title = _clean((entry.findtext("a:title", "", ns) or "").replace("\n", " "))
     abstract = _clean(entry.findtext("a:summary", "", ns) or "")
+    paper_text = title + "\n" + abstract
+    text = f"User instruction: {instruction}\n\n{paper_text}" if instruction else paper_text
     brief = ResearchBrief(
         source_type="arxiv",
         source=source,
         title=title,
         excerpt=abstract[:800],
-        ideas=extract_ideas(title + "\n" + abstract),
-        text=title + "\n" + abstract,
+        text=text,
+        user_instruction=instruction,
     )
     brief.notes.append(f"arXiv:{arxiv_id} — analyzed title + abstract")
+    if instruction:
+        brief.notes.append(f"用户附加说明: {instruction}")
     return brief
 
 
 def ingest_source(
-    source: str, pdf_bytes: Optional[bytes] = None, filename: str = ""
+    source: str, pdf_bytes: Optional[bytes] = None, filename: str = "",
+    instruction: str = "",
 ) -> ResearchBrief:
     """Turn any supported input into a ResearchBrief.
 
-    - pdf_bytes given            -> uploaded PDF
+    - pdf_bytes given            -> uploaded PDF (`instruction`: any question
+                                     typed alongside the upload, e.g. "根据
+                                     PDF，生成因子" — a separate input from
+                                     the file picker, so it must be passed
+                                     explicitly here rather than embedded in
+                                     `source`)
     - local path ending in .pdf  -> PDF file
     - arxiv.org/abs|pdf/<id>     -> arXiv API (title + abstract)
     - http(s) URL                -> fetched page, tags stripped
     - anything else              -> treated as a plain research idea
     """
     source = (source or "").strip()
+    instruction = (instruction or "").strip()
 
     if pdf_bytes is not None:
         import tempfile
@@ -273,37 +208,52 @@ def ingest_source(
             tmp.write(pdf_bytes)
             tmp.flush()
             text = _pdf_text(Path(tmp.name))
+        full_text = f"User instruction: {instruction}\n\n{text}" if instruction else text
         brief = ResearchBrief(
             source_type="pdf",
             source=filename or "uploaded.pdf",
             title=filename or "uploaded.pdf",
             excerpt=_clean(text)[:800],
-            ideas=extract_ideas(text),
-            text=text,
+            text=full_text,
+            user_instruction=instruction,
         )
         brief.notes.append("analyzed first 30 pages of the uploaded PDF")
+        if instruction:
+            brief.notes.append(f"用户附加说明: {instruction}")
         return brief
 
-    arxiv = _ARXIV_ID.search(source)
-    if arxiv:
-        return _arxiv_brief(arxiv.group(1), source)
+    url, instruction = _split_url(source)
 
-    if re.match(r"https?://", source, re.I):
-        raw = _fetch(source)
+    if url:
+        arxiv = _ARXIV_ID.search(url)
+        if arxiv:
+            return _arxiv_brief(arxiv.group(1), source, instruction)
+
+        raw = _fetch(url)
         parser = _HTMLText()
         parser.feed(raw.decode("utf-8", errors="replace"))
         text = _clean("\n".join(parser.chunks))
         if len(text) < 80:
+            host = urlparse(url).hostname or ""
+            if host.endswith("weixin.qq.com"):
+                raise IngestError(
+                    "微信公众号文章无法通过程序直接抓取——微信会向非浏览器请求返回"
+                    "反爬验证页（\"环境异常\"）而非文章正文。请把文章正文复制粘贴到"
+                    "输入框，作为普通研究想法提交。"
+                )
             raise IngestError("page fetched but no readable text extracted")
+        full_text = f"User instruction: {instruction}\n\n{text}" if instruction else text
         brief = ResearchBrief(
             source_type="url",
             source=source,
-            title=parser.title or source,
+            title=parser.title or url,
             excerpt=text[:800],
-            ideas=extract_ideas(text),
-            text=text,
+            text=full_text,
+            user_instruction=instruction,
         )
         brief.notes.append("analyzed visible page text")
+        if instruction:
+            brief.notes.append(f"用户附加说明: {instruction}")
         return brief
 
     path = Path(source)
@@ -314,7 +264,6 @@ def ingest_source(
             source=str(path),
             title=path.name,
             excerpt=_clean(text)[:800],
-            ideas=extract_ideas(text),
             text=text,
         )
         brief.notes.append("analyzed first 30 pages of the PDF")
@@ -327,6 +276,5 @@ def ingest_source(
         source=source,
         title=source[:80],
         excerpt=source[:800],
-        ideas=extract_ideas(source),
         text=source,
     )

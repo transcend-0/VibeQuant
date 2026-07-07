@@ -1,246 +1,256 @@
 """Intent parsing: natural language (EN/ZH) -> TaskSpec.
 
-Rule-based on purpose: the minimal loop must work offline and
-deterministically. The parser is honest about uncertainty — everything
-it guessed or defaulted is recorded in `clarifications`, and the caller
-(CLI / Web UI) shows the resulting YAML for confirmation before running
-(Plan-and-Act). An LLM can later replace `parse_prompt` behind the same
-signature.
+LLM-backed by design (Vibe Quant principle #1, Intent-Driven): the model
+reads the free-form prompt and proposes a complete task, self-disclosing
+whatever it guessed or defaulted in `clarifications` so the caller (CLI /
+Web UI) can show the resulting YAML for confirmation before running
+(Plan-and-Act). Every proposal is re-validated against the DSL
+(`TaskSpec.from_yaml` -> `TaskSpec.validate`) before it reaches the
+caller, so a malformed or hallucinated task is rejected rather than
+silently accepted.
+
+There is no keyword/regex fallback: if the LLM is unconfigured, a
+malformed/hallucinated reply is retried up to 3 times (`query_structured`,
+feeding the validation error back so the model can self-correct), and if
+it's still invalid after that (or the LLM is unreachable), `parse_prompt`
+raises `IntentError` rather than degrading to a guess. Callers must
+surface that clearly (not swallow it) — a misconfigured `config/llm.yaml`
+should be loud, not silently "work" on a worse code path.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
-import re
+import json
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
-from .dsl import DataSpec, ExecutionSpec, ReportSpec, StrategySpec, TaskSpec
+from .dsl import DSLError, TaskSpec
+from .llm import LLMError, get_client, query_structured
+from .research.llm_ideas import _expression_valid, _FUNCTION_CATALOG
+from .strategies import REGISTRY
+
+
+class IntentError(RuntimeError):
+    pass
 
 
 @dataclass
 class ParseResult:
     spec: TaskSpec
     clarifications: List[str] = field(default_factory=list)
-    recognized: bool = True  # a concrete strategy pattern was detected
+    recognized: bool = True  # the LLM was confident this describes a concrete strategy
 
 
-_CJK = re.compile(r"[一-鿿]")
+def _strip_fence(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        import re
 
-_STRATEGY_RULES: List[Tuple[str, re.Pattern]] = [
-    ("ma_cross", re.compile(
-        r"双均线|均线|金叉|死叉|ma[\s_-]?cross|moving\s+average|sma|golden\s+cross",
-        re.I)),
-    ("bollinger", re.compile(r"布林|bollinger|\bboll\b", re.I)),
-    ("rsi_reversion", re.compile(r"\brsi\b|超卖|超买|oversold|overbought", re.I)),
-    ("factor_rotation", re.compile(r"轮动|rotation|多因子", re.I)),
-    ("momentum", re.compile(r"动量|momentum|趋势跟踪|trend[\s-]?follow", re.I)),
-    ("buy_hold", re.compile(r"买入持有|持有不动|buy\s*(and|&|-)?\s*hold", re.I)),
-]
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return text
 
-_SYMBOL_RE = re.compile(r"\b((?:sh|sz|bj)?\d{6}|[A-Z]{2,5})\b")
-_SYMBOL_STOPWORDS = {
-    "RSI", "MACD", "SMA", "EMA", "MA", "KDJ", "BOLL", "ETF", "IPO",
-    "YAML", "CSV", "API", "HTML", "PDF", "OK", "AI", "LLM", "CN", "US",
-}
 
-_DATE_RE = re.compile(r"(\d{4})[-/年](\d{1,2})[-/月]?(\d{1,2})?")
-_LAST_YEARS_RE = re.compile(r"(?:过去|最近|近|last|past)\s*(\d+)\s*(?:年|years?)", re.I)
-_CASH_WAN_RE = re.compile(r"(\d+(?:\.\d+)?)\s*万")
-_CASH_EN_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(k|m)\b", re.I)
-_CASH_PLAIN_RE = re.compile(
-    r"(?:cash|资金|本金|初始资金)\D{0,6}(\d[\d,]{3,})", re.I)
+def _strategy_catalog() -> str:
+    lines = []
+    for name, tpl in sorted(REGISTRY.items()):
+        params = ", ".join(sorted(tpl.defaults)) or "(no params)"
+        lines.append(f"  - {name}{{{params}}}: {tpl.summary_en}")
+    return "\n".join(lines)
+
+
+_SYSTEM_TEMPLATE = """You are the intent-parsing layer of VibeQuant, an AI-native
+quantitative trading system. You turn a researcher's free-form request (English
+or Chinese) into ONE complete task for the system's YAML DSL.
+
+Strategy templates available (name{{params}}: description):
+{catalog}
+
+DSL rules you must respect:
+- top-level: name, intent, kind ("strategy" for this endpoint), data, strategy,
+  execution, report. Do not invent keys.
+- data.source: "etf"|"stock"|"index"|"hk"|"us"|"crypto"|"synthetic"|"akshare".
+  Use "etf" for A-share ETF codes (5xxxxx/1[5-6]xxxx), "stock" for A-share
+  stock codes (6-digit), "synthetic" only when no real market/symbol is
+  implied (use symbol "DEMO"). Only pick "akshare" if the user explicitly
+  asks for it.
+- data.universe: "pool24" ONLY if the user asks for the curated/built-in
+  24-ETF pool (24支ETF池/内置24ETF); otherwise "custom".
+- data.symbols: explicit list of ticker strings. CRITICAL: always QUOTE
+  every symbol in the YAML (e.g. "000001", "600000") — an unquoted
+  leading-zero number is parsed as octal by YAML and silently corrupts the
+  code. If data.universe is "pool24", just put ["DEMO"] here — the caller
+  overwrites it with the real 24-ETF list, don't try to guess the codes.
+- data.start/end: "YYYY-MM-DD". Resolve relative ranges ("past 3 years",
+  "近5年") against today's date, given below. If nothing is stated or
+  implied, default to the last 3 years ending today.
+- execution.initial_cash: a positive number (parse "100万" -> 1000000,
+  "50k"/"50K" -> 50000, "2m" -> 2000000). Default 1000000 if unstated.
+- report.language: "zh" if the request is in Chinese, else "en".
+- strategy.params is ALWAYS a flat mapping of the template's own param names
+  (from the catalog above) to numbers — never a nested object, never a key
+  named "template", "config", or anything else. Two exceptions:
+  - strategy.name: "custom" (see below), whose params are "source" (a
+    string) and "warmup" (an int).
+  - strategy.name: "factor_rotation", whose params.expressions is a list
+    of factor definitions, each formatted EXACTLY as "Name = Expr" using
+    ONLY these functions: {func_catalog}
+    over Open/High/Low/Close/Volume, plus +,-,*,/ and numeric constants —
+    e.g. "Mom20 = Delta(Close, 20) / Delay(Close, 20)". Do NOT write a bare
+    label like "momentum_20" — it must be a real, evaluable expression.
+
+Only two strategy templates exist: "factor_rotation" for genuinely
+cross-sectional multi-factor strategies (score every symbol, hold the
+top-K, rebalance periodically), and "custom" for literally everything
+else — moving averages, RSI, momentum, Bollinger bands, buy-and-hold,
+statistical/ML models (regression, classification, any model fitting),
+or any other single-symbol rule. There is no library of prebuilt rule
+templates: write the logic yourself in "custom" rather than trying to
+name a template that doesn't exist. For "custom":
+- params.source: complete Python source defining exactly one function:
+    def signal(closes, position):
+        ...
+  `closes` is a list of floats (chronological closes up to and including
+  the current bar). `position` is the currently held QUANTITY for this
+  symbol (0 if flat, positive if long — not a weight or a percentage).
+  Return a new TARGET WEIGHT in [0, 1] (fraction of equity) to change
+  position, or None to leave it unchanged — note the input and output
+  units differ (quantity in, weight out); test `position <= 0` /
+  `position > 0` for flat/long, don't compare it to a fraction like 0.5.
+  `numpy` and `pandas` are installed and may be imported and used freely
+  (e.g. `import numpy as np`) — this is a real Python execution
+  environment, not a restricted expression language; write whatever
+  computation (including model fitting) the request actually needs.
+  `scikit-learn`/`scipy` are NOT installed — implement any modeling you
+  need (regression, etc.) directly with numpy.
+- params.warmup: how many leading bars to skip before your first signal
+  needs a full window (e.g. 20 if you compute a 20-bar rolling average).
+- Write params.source as a YAML literal block scalar (the `|` syntax
+  below) so indentation and newlines survive — never inline/escaped.
+
+Example of a complete, correctly-shaped task_yaml value (note the `|`
+block scalar for params.source):
+name: "ma-cross-demo"
+intent: "5/20 day moving-average crossover on synthetic DEMO"
+kind: "strategy"
+data:
+  source: "synthetic"
+  universe: "custom"
+  symbols: ["DEMO"]
+  start: "2022-01-01"
+  end: "2024-12-31"
+strategy:
+  name: "custom"
+  params:
+    warmup: 21
+    source: |
+      def signal(closes, position):
+          if len(closes) < 21:
+              return None
+          fast = sum(closes[-5:]) / 5
+          slow = sum(closes[-20:]) / 20
+          fast_prev = sum(closes[-6:-1]) / 5
+          slow_prev = sum(closes[-21:-1]) / 20
+          if fast_prev <= slow_prev and fast > slow:
+              return 1.0
+          if fast_prev >= slow_prev and fast < slow:
+              return 0.0
+          return None
+execution:
+  initial_cash: 1000000
+report:
+  language: "en"
+
+Reply with ONLY JSON (no markdown fence):
+{{"task_yaml": "<complete YAML task, top-level keys as above>",
+ "clarifications": ["<one short sentence per default/guess you made, in the
+ request's language, e.g. 'No date range recognized; defaulting to ...'>"],
+ "recognized": true|false}}
+
+Set "recognized" to true only if the request describes a concrete,
+tradeable strategy/instruction. Set it to false if it reads like a vague
+goal, a research question, or something that needs literature analysis
+rather than a direct strategy build — but still propose your best-effort
+task with clarifications explaining the gaps.
+
+Today's date: {today}"""
+
+
+def _parse_task(reply: str) -> Dict[str, Any]:
+    try:
+        payload = json.loads(_strip_fence(reply))
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError(f"reply was not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict) or not payload.get("task_yaml"):
+        raise ValueError("reply JSON must be an object with a non-empty 'task_yaml' field")
+    try:
+        spec = TaskSpec.from_yaml(str(payload["task_yaml"]))
+    except DSLError as exc:
+        raise ValueError(f"task_yaml failed DSL validation: {exc}") from exc
+
+    # TaskSpec.validate() only checks factor.expressions for kind="factor";
+    # factor_rotation's expressions live under strategy.params and aren't
+    # DSL-validated, so a bare label like "momentum_20" (not a real
+    # expression) would only fail at backtest time. Catch it here instead,
+    # so query_structured's retry loop can make the model fix it.
+    if spec.strategy.name == "factor_rotation":
+        bad = [
+            e for e in spec.strategy.params.get("expressions", [])
+            if not _expression_valid(str(e))
+        ]
+        if bad:
+            raise ValueError(
+                f"strategy.params.expressions contains invalid factor "
+                f"expressions (not \"Name = Expr\" using the allowed "
+                f"functions): {bad}"
+            )
+
+    payload["_spec"] = spec
+    return payload
 
 
 def parse_prompt(prompt: str) -> ParseResult:
     prompt = prompt.strip()
-    clarifications: List[str] = []
-    lang = "zh" if _CJK.search(prompt) else "en"
-
-    # the curated 24-ETF pool, by any of its common names
-    pool_requested = bool(re.search(
-        r"(内置|精选)\s*24\s*支?\s*ETF|24\s*支?\s*ETF\s*池|ETF\s*池|24\s*etf", prompt, re.I
-    ))
-
-    strategy_name = _detect_strategy(prompt)
-    recognized = strategy_name is not None
-    if strategy_name is None:
-        strategy_name = "ma_cross"
-        clarifications.append(
-            "未识别出策略类型，默认使用双均线 (ma_cross)。"
-            if lang == "zh"
-            else "No strategy recognized; defaulting to ma_cross."
+    client = get_client()
+    if client is None:
+        raise IntentError(
+            "LLM not configured — set up config/llm.yaml before generating "
+            "strategies from natural language."
         )
-    params = _extract_params(strategy_name, prompt)
 
-    symbols = _extract_symbols(prompt)
-    if pool_requested:
+    system_prompt = _SYSTEM_TEMPLATE.format(
+        catalog=_strategy_catalog(),
+        func_catalog=_FUNCTION_CATALOG,
+        today=_dt.date.today().isoformat(),
+    )
+    try:
+        payload = query_structured(client, prompt, system_prompt, _parse_task)
+    except LLMError as exc:
+        raise IntentError(f"LLM intent parsing failed: {exc}") from exc
+    except ValueError as exc:
+        raise IntentError(f"LLM produced an invalid task after 3 attempts: {exc}") from exc
+
+    spec = payload.pop("_spec")
+    if not spec.intent:
+        spec.intent = prompt
+    if not spec.name or spec.name == "untitled-task":
+        import re
+
+        slug = re.sub(r"[^a-zA-Z0-9一-鿿]+", "-", prompt)[:32].strip("-")
+        spec.name = slug or f"task-{_dt.date.today().isoformat()}"
+
+    clarifications = [str(c) for c in (payload.get("clarifications") or [])]
+    if spec.data.universe == "pool24":
+        # the model is only asked to *select* pool24, not to enumerate its
+        # symbols from memory — fill in the authoritative list ourselves.
         from .data_sources.etf_pool import POOL_SYMBOLS
 
-        symbols = list(POOL_SYMBOLS)
+        spec.data.symbols = list(POOL_SYMBOLS)
+        spec.validate()
         clarifications.append(
-            "已选用精选24ETF池作为标的池。" if lang == "zh"
+            "已选用精选24ETF池作为标的池。" if spec.report.language == "zh"
             else "Using the curated 24-ETF pool as the universe."
         )
-    if not symbols:
-        symbols = ["DEMO"]
-        clarifications.append(
-            "未识别出标的，使用合成数据标的 DEMO。"
-            if lang == "zh"
-            else "No symbols recognized; using synthetic symbol DEMO."
-        )
-
-    start, end = _extract_dates(prompt)
-    if start is None and end is None:
-        start, end = "2022-01-01", "2024-12-31"
-        clarifications.append(
-            "未识别出回测区间，默认 2022-01-01 ~ 2024-12-31。"
-            if lang == "zh"
-            else "No date range recognized; defaulting to 2022-01-01 ~ 2024-12-31."
-        )
-
-    source = "synthetic"
-    universe = "custom"
-    etf_pattern = r"(?:sh|sz)?(?:5\d{5}|1[5-6]\d{4})(?:\.(?:SH|SZ))?"
-    if pool_requested:
-        source = "etf"
-        universe = "pool24"
-    elif re.search(r"akshare|真实数据|实际数据|real\s+data", prompt, re.I):
-        source = "akshare"
-    elif symbols != ["DEMO"] and all(
-        re.fullmatch(etf_pattern, s, re.I) for s in symbols
-    ):
-        source = "etf"  # A-share ETF codes -> real daily bars (free, cached)
-        clarifications.append(
-            "识别到 A 股 ETF 代码，将使用真实日线数据（eastmoney/tencent，本地缓存）。"
-            if lang == "zh"
-            else "A-share ETF codes detected; using real daily bars "
-            "(eastmoney/tencent with local cache)."
-        )
-    elif symbols != ["DEMO"] and all(re.fullmatch(r"(?:sh|sz|bj)?\d{6}", s) for s in symbols):
-        source = "stock"  # A-share stock codes -> real daily bars
-        clarifications.append(
-            "识别到 A 股个股代码，将使用真实日线数据（eastmoney/tencent，本地缓存）。"
-            if lang == "zh"
-            else "A-share stock codes detected; using real daily bars "
-            "(eastmoney/tencent with local cache)."
-        )
-
-    cash = _extract_cash(prompt) or 1_000_000.0
-
-    name_slug = re.sub(r"[^a-zA-Z0-9一-鿿]+", "-", prompt)[:32].strip("-")
-    spec = TaskSpec(
-        name=name_slug or f"task-{_dt.date.today().isoformat()}",
-        intent=prompt,
-        data=DataSpec(
-            source=source, universe=universe, symbols=symbols,
-            start=start, end=end,
-        ),
-        strategy=StrategySpec(name=strategy_name, params=params),
-        execution=ExecutionSpec(initial_cash=cash),
-        report=ReportSpec(language=lang),
-    )
-    spec.validate()
-    return ParseResult(
-        spec=spec, clarifications=clarifications, recognized=recognized
-    )
-
-
-# ------------------------------------------------------------- helpers
-def _detect_strategy(prompt: str) -> Optional[str]:
-    for name, pattern in _STRATEGY_RULES:
-        if pattern.search(prompt):
-            return name
-    return None
-
-
-def _extract_params(strategy: str, prompt: str) -> Dict:
-    if strategy == "ma_cross":
-        pairs = re.findall(r"(\d+)\s*(?:日|天|day|d\b)?[^\d]{0,8}?(\d+)\s*(?:日|天|day|d\b)", prompt, re.I)
-        nums = re.findall(r"\b(\d{1,3})\b", prompt)
-        if pairs:
-            fast, slow = int(pairs[0][0]), int(pairs[0][1])
-        elif len(nums) >= 2:
-            fast, slow = int(nums[0]), int(nums[1])
-        else:
-            return {}
-        if 0 < fast < slow <= 250:
-            return {"fast": fast, "slow": slow}
-        return {}
-    if strategy == "rsi_reversion":
-        params: Dict = {}
-        period = re.search(r"rsi\s*\(?(\d{1,3})\)?|(\d{1,3})\s*日\s*rsi", prompt, re.I)
-        if period:
-            value = int(period.group(1) or period.group(2))
-            if 2 <= value <= 100:
-                params["period"] = value
-        thresholds = re.findall(r"\b(\d{1,2})\s*[/,，]\s*(\d{2})\b", prompt)
-        if thresholds:
-            low, high = float(thresholds[0][0]), float(thresholds[0][1])
-            if low < high <= 100:
-                params["oversold"], params["overbought"] = low, high
-        return params
-    if strategy == "momentum":
-        lookback = re.search(r"(\d{1,3})\s*(?:日|天|day)", prompt, re.I)
-        if lookback and 2 <= int(lookback.group(1)) <= 250:
-            return {"lookback": int(lookback.group(1))}
-        return {}
-    if strategy == "bollinger":
-        period = re.search(r"(\d{1,3})\s*(?:日|天|day)", prompt, re.I)
-        if period and 5 <= int(period.group(1)) <= 250:
-            return {"period": int(period.group(1))}
-        return {}
-    return {}
-
-
-def _extract_symbols(prompt: str) -> List[str]:
-    symbols: List[str] = []
-    for match in _SYMBOL_RE.findall(prompt):
-        token = match.strip()
-        if token.upper() in _SYMBOL_STOPWORDS:
-            continue
-        if re.fullmatch(r"\d{4}", token):  # bare year fragments
-            continue
-        if token not in symbols:
-            symbols.append(token)
-    return symbols[:10]
-
-
-def _extract_dates(prompt: str) -> Tuple[Optional[str], Optional[str]]:
-    matches = _DATE_RE.findall(prompt)
-    dates: List[str] = []
-    for year, month, day in matches:
-        y, m = int(year), int(month)
-        if not 1990 <= y <= 2100 or not 1 <= m <= 12:
-            continue
-        d = int(day) if day else 1
-        try:
-            dates.append(_dt.date(y, m, d).isoformat())
-        except ValueError:
-            continue
-    if len(dates) >= 2:
-        return min(dates), max(dates)
-    if len(dates) == 1:
-        return dates[0], None
-
-    rel = _LAST_YEARS_RE.search(prompt)
-    if rel:
-        years = int(rel.group(1))
-        end = _dt.date.today()
-        start = end.replace(year=end.year - min(years, 30))
-        return start.isoformat(), end.isoformat()
-    return None, None
-
-
-def _extract_cash(prompt: str) -> Optional[float]:
-    wan = _CASH_WAN_RE.search(prompt)
-    if wan:
-        return float(wan.group(1)) * 10_000
-    en = _CASH_EN_RE.search(prompt)
-    if en:
-        value = float(en.group(1))
-        return value * (1_000 if en.group(2).lower() == "k" else 1_000_000)
-    plain = _CASH_PLAIN_RE.search(prompt)
-    if plain:
-        return float(plain.group(1).replace(",", ""))
-    return None
+    recognized = bool(payload.get("recognized", True))
+    return ParseResult(spec=spec, clarifications=clarifications, recognized=recognized)

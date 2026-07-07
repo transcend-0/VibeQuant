@@ -1,10 +1,14 @@
-"""LLM-backed research-idea extraction (optional upgrade over keyword rules).
+"""LLM-backed research-idea extraction.
 
 Given source text (paper abstract, forum post, idea), asks the configured
 LLM for factor/strategy candidates in strict JSON, then validates every
-factor expression against the akquant expression grammar before accepting
-it. Anything invalid is dropped; any failure falls back to the keyword
-rules — the LLM can only add quality, never break the pipeline.
+factor expression against akquant's real expression grammar (sourced from
+`src.adapters.akquant_factor`, not a hand-copied list) before accepting
+it. Anything invalid is dropped from the result. If the reply is
+malformed or every proposed idea fails validation, the request is retried
+(with the error fed back) up to 3 times via `query_structured`; if it
+still fails, `IdeaExtractionError` is raised — there is no rule-based
+fallback.
 """
 
 from __future__ import annotations
@@ -12,40 +16,47 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import List, Optional
+from typing import List
 
-from ..llm import LLMClient, LLMError
+from ..adapters.akquant_factor import known_expression_functions
+from ..llm import LLMClient, LLMError, query_structured
 from .ingest import Idea
 
 logger = logging.getLogger(__name__)
 
-# Function names understood by akquant's expression parser + data columns.
-_ALLOWED_TOKENS = {
-    "ts_mean", "ts_std", "ts_max", "ts_min", "ts_sum", "ts_corr", "ts_cov",
-    "ts_argmax", "ts_argmin", "ts_rank", "delay", "delta", "rank", "scale",
-    "log", "abs", "sign", "signedpower", "if",
+
+class IdeaExtractionError(RuntimeError):
+    pass
+
+
+# Function names understood by akquant's expression parser (single source of
+# truth: src.adapters.akquant_factor.known_expression_functions) + data columns.
+_ALLOWED_TOKENS = {f.lower() for f in known_expression_functions()} | {
     "open", "high", "low", "close", "volume",
 }
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
-_STRATEGY_NAMES = {"ma_cross", "rsi_reversion", "momentum", "bollinger", "buy_hold"}
+_FUNCTION_CATALOG = ", ".join(sorted(known_expression_functions()))
 
-_SYSTEM = """You are a quantitative research assistant. You read research text and
+_SYSTEM = f"""You are a quantitative research assistant. You read research text and
 propose testable ideas for a daily-frequency A-share ETF universe with only
 price/volume data (columns: Open, High, Low, Close, Volume).
 
-Factor expressions must use ONLY these functions:
-Ts_Mean(x,d), Ts_Std(x,d), Ts_Max(x,d), Ts_Min(x,d), Ts_Sum(x,d),
-Ts_Corr(x,y,d), Ts_Cov(x,y,d), Ts_Rank(x,d), Ts_ArgMax(x,d), Ts_ArgMin(x,d),
-Delay(x,d), Delta(x,d), Rank(x), Scale(x), Log(x), Abs(x), Sign(x), If(c,a,b)
+Factor expressions must use ONLY these functions: {_FUNCTION_CATALOG}
 plus +,-,*,/ and numeric constants. Higher factor value should predict higher
 forward return (negate if the paper's signal is inverted).
 
 Reply with ONLY a JSON array (no markdown fence), each element:
-{"name": "ShortName", "kind": "factor" or "strategy",
+{{"name": "ShortName", "kind": "factor" or "strategy",
  "title_en": "...", "title_zh": "...",
  "factor_expressions": ["Name = Expr", ...],   // for kind=factor, 1-2 items
- "strategy_name": "ma_cross|rsi_reversion|momentum|bollinger|buy_hold" or null,
- "evidence": ["short quote or concept from the text", ...]}
+ "strategy_name": "custom" or null,   // "custom" if kind=strategy, else null
+ "strategy_source": "def signal(closes, position):\\n    ..." or null,
+   // required when strategy_name="custom": complete Python implementing
+   // the paper's rule. closes: chronological floats. position: currently
+   // held QUANTITY (0 if flat, not a weight). Return a target weight in
+   // [0,1] or None. Plain Python only (len/sum/min/max/range) -- no imports.
+ "strategy_warmup": <int> or null,  // leading bars to skip, e.g. 20
+ "evidence": ["short quote or concept from the text", ...]}}
 At most 5 ideas, ordered most to least promising. Only propose what the text
 actually supports; if it needs fundamental data, skip it."""
 
@@ -63,18 +74,13 @@ def _strip_fence(text: str) -> str:
     return text
 
 
-def llm_extract_ideas(text: str, client: LLMClient) -> Optional[List[Idea]]:
-    """Ideas from the LLM, validated. None means: use the rule fallback."""
+def _parse_ideas(reply: str) -> List[Idea]:
     try:
-        reply = client.query(
-            f"Research text:\n\n{text[:12000]}", system_prompt=_SYSTEM
-        )
         items = json.loads(_strip_fence(reply))
-    except (LLMError, json.JSONDecodeError, TypeError) as exc:
-        logger.warning("LLM idea extraction unavailable: %s", exc)
-        return None
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError(f"reply was not valid JSON: {exc}") from exc
     if not isinstance(items, list):
-        return None
+        raise ValueError("reply JSON must be a list")
 
     ideas: List[Idea] = []
     for rank, item in enumerate(items[:5]):
@@ -85,9 +91,17 @@ def llm_extract_ideas(text: str, client: LLMClient) -> Optional[List[Idea]]:
             str(e) for e in (item.get("factor_expressions") or [])
             if _expression_valid(str(e))
         ][:2]
-        strategy = item.get("strategy_name")
-        if strategy not in _STRATEGY_NAMES:
-            strategy = None
+        strategy = None
+        strategy_params: dict = {}
+        if item.get("strategy_name") == "custom":
+            source = str(item.get("strategy_source") or "")
+            if "def signal(" in source:  # light sanity check; custom is unsandboxed
+                strategy = "custom"
+                warmup = item.get("strategy_warmup")
+                strategy_params = {
+                    "source": source,
+                    "warmup": int(warmup) if isinstance(warmup, (int, float)) else 0,
+                }
         if kind == "factor" and not exprs:
             continue  # every expression it proposed was invalid
         if kind == "strategy" and not strategy:
@@ -105,6 +119,27 @@ def llm_extract_ideas(text: str, client: LLMClient) -> Optional[List[Idea]]:
                 score=len(items) - rank,  # preserve the LLM's ordering
                 factor_expressions=exprs,
                 strategy_name=strategy,
+                strategy_params=strategy_params,
             )
         )
-    return ideas or None
+    if items and not ideas:
+        # the model tried but every candidate failed validation — worth a
+        # retry with feedback, unlike a genuine "nothing here" ([] items).
+        raise ValueError(
+            "none of the proposed ideas passed validation "
+            "(invalid kind, strategy_name, or factor expression tokens)"
+        )
+    return ideas
+
+
+def llm_extract_ideas(text: str, client: LLMClient) -> List[Idea]:
+    """Ideas from the LLM, validated. Raises IdeaExtractionError on failure."""
+    user_prompt = f"Research text:\n\n{text[:12000]}"
+    try:
+        return query_structured(client, user_prompt, _SYSTEM, _parse_ideas)
+    except LLMError as exc:
+        raise IdeaExtractionError(f"LLM idea extraction failed: {exc}") from exc
+    except ValueError as exc:
+        raise IdeaExtractionError(
+            f"LLM idea extraction failed after 3 attempts: {exc}"
+        ) from exc
