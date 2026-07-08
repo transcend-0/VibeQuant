@@ -9,35 +9,36 @@ data:
   end: "2024-12-31"
   seed: 7
 strategy:
-  name: custom
+  name: rsi
   params:
-    warmup: 15
     source: |
-      def _rsi(closes, period):
-          window = closes[-(period + 1):]
-          gains = losses = 0.0
-          for prev, cur in zip(window, window[1:]):
-              delta = cur - prev
-              if delta >= 0:
-                  gains += delta
-              else:
-                  losses -= delta
-          if losses == 0:
-              return 100.0
-          rs = (gains / period) / (losses / period)
-          return 100.0 - 100.0 / (1.0 + rs)
-
-
-      def signal(closes, position):
+      class Strategy(BaseStrategy):
           period, oversold, overbought = 14, 30, 70
-          if len(closes) < period + 1:
-              return None
-          rsi = _rsi(closes, period)
-          if position <= 0 and rsi < oversold:
-              return 1.0
-          if position > 0 and rsi > overbought:
-              return 0.0
-          return None
+
+          def _rsi(self, closes):
+              window = closes[-(self.period + 1):]
+              gains = losses = 0.0
+              for prev, cur in zip(window, window[1:]):
+                  delta = cur - prev
+                  if delta >= 0:
+                      gains += delta
+                  else:
+                      losses -= delta
+              if losses == 0:
+                  return 100.0
+              rs = (gains / self.period) / (losses / self.period)
+              return 100.0 - 100.0 / (1.0 + rs)
+
+          def on_bar(self, bar):
+              closes = self.get_history(count=self.period + 1, symbol=bar.symbol, field="close")
+              if len(closes) < self.period + 1:
+                  return
+              rsi = self._rsi(list(closes))
+              position = self.get_position(bar.symbol)
+              if position <= 0 and rsi < self.oversold:
+                  self.order_target_percent(target_percent=0.95, symbol=bar.symbol)
+              elif position > 0 and rsi > self.overbought:
+                  self.close_position(bar.symbol)
 execution:
   mode: backtest
   initial_cash: 500000

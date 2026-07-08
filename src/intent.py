@@ -27,8 +27,8 @@ from typing import Any, Dict, List
 
 from .dsl import DSLError, TaskSpec
 from .llm import LLMError, get_client, query_structured
-from .research.llm_ideas import _expression_valid, _FUNCTION_CATALOG
-from .strategies import REGISTRY
+from .research.llm_ideas import _FUNCTION_CATALOG
+from .strategy_source import StrategySourceError, validate_strategy_params
 
 
 class IntentError(RuntimeError):
@@ -52,20 +52,9 @@ def _strip_fence(text: str) -> str:
     return text
 
 
-def _strategy_catalog() -> str:
-    lines = []
-    for name, tpl in sorted(REGISTRY.items()):
-        params = ", ".join(sorted(tpl.defaults)) or "(no params)"
-        lines.append(f"  - {name}{{{params}}}: {tpl.summary_en}")
-    return "\n".join(lines)
-
-
 _SYSTEM_TEMPLATE = """You are the intent-parsing layer of VibeQuant, an AI-native
 quantitative trading system. You turn a researcher's free-form request (English
 or Chinese) into ONE complete task for the system's YAML DSL.
-
-Strategy templates available (name{{params}}: description):
-{catalog}
 
 DSL rules you must respect:
 - top-level: name, intent, kind ("strategy" for this endpoint), data, strategy,
@@ -75,8 +64,11 @@ DSL rules you must respect:
   stock codes (6-digit), "synthetic" only when no real market/symbol is
   implied (use symbol "DEMO"). Only pick "akshare" if the user explicitly
   asks for it.
-- data.universe: "pool24" ONLY if the user asks for the curated/built-in
-  24-ETF pool (24支ETF池/内置24ETF); otherwise "custom".
+- data.universe: "pool24" if the user asks for the curated/built-in 24-ETF
+  pool (24支ETF池/内置24ETF) OR names no specific instrument/ticker/index at
+  all (a vague/generic request with nothing concrete to trade) — pool24 is
+  the system default universe. Use "custom" only when the request names
+  actual ticker(s), an index, or another concrete instrument.
 - data.symbols: explicit list of ticker strings. CRITICAL: always QUOTE
   every symbol in the YAML (e.g. "000001", "600000") — an unquoted
   leading-zero number is parsed as octal by YAML and silently corrupts the
@@ -84,53 +76,82 @@ DSL rules you must respect:
   overwrites it with the real 24-ETF list, don't try to guess the codes.
 - data.start/end: "YYYY-MM-DD". Resolve relative ranges ("past 3 years",
   "近5年") against today's date, given below. If nothing is stated or
-  implied, default to the last 3 years ending today.
+  implied, default to start="2025-01-01", end="2025-12-31".
 - execution.initial_cash: a positive number (parse "100万" -> 1000000,
   "50k"/"50K" -> 50000, "2m" -> 2000000). Default 1000000 if unstated.
 - report.language: "zh" if the request is in Chinese, else "en".
-- strategy.params is ALWAYS a flat mapping of the template's own param names
-  (from the catalog above) to numbers — never a nested object, never a key
-  named "template", "config", or anything else. Two exceptions:
-  - strategy.name: "custom" (see below), whose params are "source" (a
-    string) and "warmup" (an int).
-  - strategy.name: "factor_rotation", whose params.expressions is a list
-    of factor definitions, each formatted EXACTLY as "Name = Expr" using
-    ONLY these functions: {func_catalog}
-    over Open/High/Low/Close/Volume, plus +,-,*,/ and numeric constants —
-    e.g. "Mom20 = Delta(Close, 20) / Delay(Close, 20)". Do NOT write a bare
-    label like "momentum_20" — it must be a real, evaluable expression.
+- strategy.name: a short descriptive label only (e.g. "custom",
+  "factor_rotation", "ma_cross") — purely informational, does not select a
+  fixed template. ALL strategies execute the same way: see below.
+- strategy.params.source: THE strategy. Complete Python source defining a
+  class that inherits `Strategy` (already in scope — it IS akquant's own
+  Strategy base class, imported for you), using akquant's real API
+  directly — the same class you'd write against akquant itself, not a
+  restricted callback. Available on `self` (a partial list; there is
+  more, but this covers nearly everything a trading rule needs):
+    self.get_position(symbol) -> float          current held quantity (0 if flat)
+    self.get_portfolio_value() -> float         total account equity (cash + positions)
+    self.get_cash() -> float                    free cash, not the same as equity
+      (there is NO self.portfolio/.equity attribute — use these methods)
+    self.get_history(count, symbol, field="close") -> np.ndarray   chronological history
+      (this IS already a plain numpy array — do NOT call `.values` on it,
+      that's a pandas Series/DataFrame method and raises AttributeError here;
+      just index/slice it directly, e.g. `closes[-20:]`, `closes.mean()`)
+    self.buy(symbol=.., quantity=..) / self.sell(symbol=.., quantity=..)
+    self.close_position(symbol=..)
+    self.order_target_percent(symbol=.., target_percent=..)   fraction of equity, must be >= 0
+    self.order_target_weights(target_weights={{sym: pct, ...}}, liquidate_unmentioned=False, rebalance_tolerance=0.01)
+      target_percent/weights must all be >= 0 -- short selling is disabled by
+      default (matches real A-share retail constraints); a negative weight
+      raises "target weight ... must be >= 0". For a long-short-flavored
+      idea, implement it long-only instead (e.g. skip the short leg, or go
+      to cash / underweight the worst names rather than shorting them).
+  and the hooks you can override (define whichever ones the strategy needs):
+    def on_bar(self, bar):            fires every bar; bar.symbol/.open/.high/.low/.close/.volume
+      and bar.timestamp_iso (str, ISO 8601, e.g. "2022-01-02T16:00:00Z" — the
+      easy way to get the bar's date/time, e.g. bar.timestamp_iso[:10] for
+      "YYYY-MM-DD", or int(bar.timestamp_iso[5:7]) for the month). There is
+      NO bar.date/.datetime/.time attribute — do not guess one; bar.timestamp
+      exists too but is a raw int of nanoseconds since epoch, not directly
+      comparable to a month/day — prefer timestamp_iso unless you specifically
+      need the raw int.
+    def on_daily_rebalance(self, trading_date, timestamp):   fires once per day, before that day's bars
+    def __init__(self):               only if you need state; MUST call super().__init__() and take NO
+                                       extra constructor arguments (akquant instantiates the class itself)
+  `numpy as np` and `pandas as pd` are already in scope, as are the
+  globals `SYMBOLS` (list of every ticker in this task), `START`, `END`
+  (the task's date range as strings) -- `self.symbols`/`self.start`/
+  `self.end` are ALSO set to these automatically before your `__init__`
+  runs, so either style works. This is a real, unsandboxed Python
+  execution environment — write whatever computation the request needs
+  (including model fitting with numpy; scikit-learn/scipy are NOT
+  installed).
+- strategy.params.expressions: OPTIONAL, only add this for cross-sectional
+  multi-factor strategies. A list of factor definitions, each formatted
+  EXACTLY as "Name = Expr" using ONLY these functions: {func_catalog}
+  over Open/High/Low/Close/Volume, plus +,-,*,/ and numeric constants —
+  e.g. "Mom20 = Delta(Close, 20) / Delay(Close, 20)". When present, the
+  caller precomputes real per-date scores from these expressions (no
+  lookahead) and injects them as a `FACTOR_SCORES` global — a
+  `{{"YYYY-MM-DD": {{symbol: score}}}}` dict your `on_daily_rebalance` can
+  rank on, e.g. `FACTOR_SCORES.get(str(trading_date)[:10], {{}})` (its
+  lookup also tolerates passing `trading_date` directly, unconverted, but
+  prefer the string form to be explicit). Do NOT write a bare label like
+  "momentum_20" here — it must be a real, evaluable expression, and it is
+  only meaningful together with a `source` that actually reads
+  FACTOR_SCORES.
+- Write strategy.params.source as a YAML literal block scalar (the `|`
+  syntax below) so indentation and newlines survive — never inline/escaped.
 
-Only two strategy templates exist: "factor_rotation" for genuinely
-cross-sectional multi-factor strategies (score every symbol, hold the
-top-K, rebalance periodically), and "custom" for literally everything
-else — moving averages, RSI, momentum, Bollinger bands, buy-and-hold,
-statistical/ML models (regression, classification, any model fitting),
-or any other single-symbol rule. There is no library of prebuilt rule
-templates: write the logic yourself in "custom" rather than trying to
-name a template that doesn't exist. For "custom":
-- params.source: complete Python source defining exactly one function:
-    def signal(closes, position):
-        ...
-  `closes` is a list of floats (chronological closes up to and including
-  the current bar). `position` is the currently held QUANTITY for this
-  symbol (0 if flat, positive if long — not a weight or a percentage).
-  Return a new TARGET WEIGHT in [0, 1] (fraction of equity) to change
-  position, or None to leave it unchanged — note the input and output
-  units differ (quantity in, weight out); test `position <= 0` /
-  `position > 0` for flat/long, don't compare it to a fraction like 0.5.
-  `numpy` and `pandas` are installed and may be imported and used freely
-  (e.g. `import numpy as np`) — this is a real Python execution
-  environment, not a restricted expression language; write whatever
-  computation (including model fitting) the request actually needs.
-  `scikit-learn`/`scipy` are NOT installed — implement any modeling you
-  need (regression, etc.) directly with numpy.
-- params.warmup: how many leading bars to skip before your first signal
-  needs a full window (e.g. 20 if you compute a 20-bar rolling average).
-- Write params.source as a YAML literal block scalar (the `|` syntax
-  below) so indentation and newlines survive — never inline/escaped.
+There is no library of prebuilt rule templates (no ma_cross/rsi/momentum/
+bollinger/buy_hold) and no restrictive per-symbol callback contract:
+write the logic directly as an akquant Strategy class, whether that's a
+single-symbol rule, a statistical/ML model, or a cross-sectional
+multi-factor rotation (score every symbol, hold the top-K, rebalance
+periodically — see the second example below).
 
-Example of a complete, correctly-shaped task_yaml value (note the `|`
-block scalar for params.source):
+Example 1 — single-symbol rule (note the `|` block scalar for
+params.source):
 name: "ma-cross-demo"
 intent: "5/20 day moving-average crossover on synthetic DEMO"
 kind: "strategy"
@@ -138,29 +159,74 @@ data:
   source: "synthetic"
   universe: "custom"
   symbols: ["DEMO"]
-  start: "2022-01-01"
-  end: "2024-12-31"
+  start: "2025-01-01"
+  end: "2025-12-31"
 strategy:
-  name: "custom"
+  name: "ma_cross"
   params:
-    warmup: 21
     source: |
-      def signal(closes, position):
-          if len(closes) < 21:
-              return None
-          fast = sum(closes[-5:]) / 5
-          slow = sum(closes[-20:]) / 20
-          fast_prev = sum(closes[-6:-1]) / 5
-          slow_prev = sum(closes[-21:-1]) / 20
-          if fast_prev <= slow_prev and fast > slow:
-              return 1.0
-          if fast_prev >= slow_prev and fast < slow:
-              return 0.0
-          return None
+      class Strategy(BaseStrategy):
+          fast, slow = 5, 20
+
+          def on_bar(self, bar):
+              closes = self.get_history(count=self.slow + 1, symbol=bar.symbol, field="close")
+              if len(closes) < self.slow + 1:
+                  return
+              fast_now = closes[-self.fast:].mean()
+              slow_now = closes[-self.slow:].mean()
+              fast_prev = closes[-self.fast - 1:-1].mean()
+              slow_prev = closes[-self.slow - 1:-1].mean()
+              position = self.get_position(bar.symbol)
+              if fast_prev <= slow_prev and fast_now > slow_now and position <= 0:
+                  self.order_target_percent(target_percent=0.95, symbol=bar.symbol)
+              elif fast_prev >= slow_prev and fast_now < slow_now and position > 0:
+                  self.close_position(bar.symbol)
 execution:
   initial_cash: 1000000
 report:
   language: "en"
+
+Example 2 — cross-sectional multi-factor rotation (top-K by combined
+factor score, two-phase rebalance so exits settle before entries submit —
+avoids cash-rejected buy orders):
+strategy:
+  name: "factor_rotation"
+  params:
+    expressions:
+      - "Mom20 = Delta(Close, 20) / Delay(Close, 20)"
+    source: |
+      class Strategy(BaseStrategy):
+          top_k = 5
+          rebalance_days = 5
+
+          def __init__(self):
+              super().__init__()
+              self.day_count = -1
+              self.pending_target = None
+              self.held = set()
+
+          def on_daily_rebalance(self, trading_date, timestamp):
+              if self.pending_target is not None:
+                  self.order_target_weights(
+                      target_weights=self.pending_target,
+                      liquidate_unmentioned=False,
+                      rebalance_tolerance=0.01,
+                  )
+                  self.held = set(self.pending_target)
+                  self.pending_target = None
+              self.day_count += 1
+              if self.day_count % self.rebalance_days:
+                  return
+              day_scores = FACTOR_SCORES.get(str(trading_date)[:10]) or {{}}
+              if len(day_scores) < self.top_k:
+                  return
+              ranked = sorted(day_scores, key=day_scores.get, reverse=True)
+              weight = 0.95 / self.top_k
+              target = {{s: weight for s in ranked[: self.top_k]}}
+              for symbol in self.held - set(target):
+                  if float(self.get_position(symbol)) > 0:
+                      self.close_position(symbol)
+              self.pending_target = target
 
 Reply with ONLY JSON (no markdown fence):
 {{"task_yaml": "<complete YAML task, top-level keys as above>",
@@ -189,22 +255,15 @@ def _parse_task(reply: str) -> Dict[str, Any]:
     except DSLError as exc:
         raise ValueError(f"task_yaml failed DSL validation: {exc}") from exc
 
-    # TaskSpec.validate() only checks factor.expressions for kind="factor";
-    # factor_rotation's expressions live under strategy.params and aren't
-    # DSL-validated, so a bare label like "momentum_20" (not a real
-    # expression) would only fail at backtest time. Catch it here instead,
-    # so query_structured's retry loop can make the model fix it.
-    if spec.strategy.name == "factor_rotation":
-        bad = [
-            e for e in spec.strategy.params.get("expressions", [])
-            if not _expression_valid(str(e))
-        ]
-        if bad:
-            raise ValueError(
-                f"strategy.params.expressions contains invalid factor "
-                f"expressions (not \"Name = Expr\" using the allowed "
-                f"functions): {bad}"
-            )
+    # TaskSpec.validate() doesn't reach into strategy.params (it's an
+    # opaque dict as far as the DSL is concerned), so a missing/malformed
+    # Strategy class or an invalid factor expression would only fail at
+    # backtest time. Catch it here instead, so query_structured's retry
+    # loop can make the model fix it before the user ever sees the task.
+    try:
+        validate_strategy_params(spec.strategy.params)
+    except StrategySourceError as exc:
+        raise ValueError(str(exc)) from exc
 
     payload["_spec"] = spec
     return payload
@@ -220,7 +279,6 @@ def parse_prompt(prompt: str) -> ParseResult:
         )
 
     system_prompt = _SYSTEM_TEMPLATE.format(
-        catalog=_strategy_catalog(),
         func_catalog=_FUNCTION_CATALOG,
         today=_dt.date.today().isoformat(),
     )

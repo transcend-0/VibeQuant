@@ -194,5 +194,11 @@ def test_refine_task_raises_without_llm(fake_llm):
 def test_refine_validator_rejects_bad_yaml():
     assert _validate_yaml("kind: strategy\nexecution: {mode: live}") is None
     assert _validate_yaml("not: [valid") is None
-    good = "kind: strategy\ndata: {symbols: [DEMO]}\n"
+    # bare strategy.params (no source) is also invalid now
+    assert _validate_yaml("kind: strategy\ndata: {symbols: [DEMO]}\n") is None
+    good = (
+        "kind: strategy\ndata: {symbols: [DEMO]}\n"
+        "strategy: {params: {source: \"class Strategy(BaseStrategy):\\n"
+        "    def on_bar(self, bar):\\n        pass\\n\"}}\n"
+    )
     assert _validate_yaml(good) is not None

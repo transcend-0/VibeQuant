@@ -31,7 +31,6 @@ import yaml
 from .. import data as data_mod
 from ..config import config_dir, workspace_dir
 from ..dsl import DSLError, TaskSpec
-from ..strategies import build_signal
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +105,12 @@ def create_deployment(
             "deployment needs a real data source (data.source: etf); "
             f"got {spec.data.source!r}"
         )
+    from ..strategy_source import StrategySourceError, validate_strategy_params
+
+    try:
+        validate_strategy_params(spec.strategy.params)
+    except StrategySourceError as exc:
+        raise DeployError(f"invalid strategy: {exc}") from exc
     if not _valid_time(run_at):
         raise DeployError("run_at must be HH:MM (24h)")
 
@@ -156,32 +161,30 @@ def _valid_time(value: str) -> bool:
 
 # ------------------------------------------------------------ signal run
 def compute_signals(spec: TaskSpec) -> List[Dict[str, Any]]:
-    """Replay the strategy over history; report today's stance per symbol."""
+    """Run the real backtest through today; report the current stance per
+    symbol from the resulting position history (last bar vs. the one
+    before it), so deployments see exactly what a live run would hold --
+    no separate replay logic to keep in sync with the adapter."""
+    from ..adapters.akquant_engine import run_backtest
+
     data_spec = spec.data
     data_spec.end = _dt.date.today().isoformat()
     frames = data_mod.load(data_spec)
 
-    if spec.strategy.name == "factor_rotation":
-        return _rotation_signals(spec, frames)
-
-    signal_fn = build_signal(spec.strategy.name, spec.strategy.params)
+    output = run_backtest(spec, frames)
+    positions = output.raw.positions
+    last = positions.iloc[-1].to_dict() if len(positions) else {}
+    prev = positions.iloc[-2].to_dict() if len(positions) > 1 else {}
 
     signals = []
     for symbol, df in frames.items():
-        closes = [float(c) for c in df["close"].tolist()]
-        position = 0.0
-        prev_position = 0.0
-        for i in range(len(closes)):
-            prev_position = position
-            target = signal_fn(closes[: i + 1], position)
-            if target is not None:
-                position = 1.0 if target > 0 else 0.0
-
-        if position > 0 and prev_position <= 0:
+        pos_now = float(last.get(symbol, 0.0) or 0.0)
+        pos_prev = float(prev.get(symbol, 0.0) or 0.0)
+        if pos_now > 0 and pos_prev <= 0:
             action = "BUY"
-        elif position <= 0 and prev_position > 0:
+        elif pos_now <= 0 and pos_prev > 0:
             action = "SELL"
-        elif position > 0:
+        elif pos_now > 0:
             action = "HOLD"
         else:
             action = "STAY_FLAT"
@@ -189,10 +192,10 @@ def compute_signals(spec: TaskSpec) -> List[Dict[str, Any]]:
             {
                 "symbol": symbol,
                 "action": action,
-                "position": position,
-                "last_close": round(closes[-1], 4),
+                "position": pos_now,
+                "last_close": round(float(df["close"].iloc[-1]), 4),
                 "last_bar_date": str(pd_date(df)),
-                "bars": len(closes),
+                "bars": len(df),
             }
         )
     return signals
@@ -340,31 +343,3 @@ def run_due_deployments(now: Optional[_dt.datetime] = None) -> List[Dict[str, An
                 logger.error("deployment %s failed: %s", dep.id, exc)
                 results.append({"deployment": dep.id, "error": str(exc)})
     return results
-
-
-def _rotation_signals(spec: TaskSpec, frames) -> List[Dict[str, Any]]:
-    """Rotation deployments report the current top-K target portfolio."""
-    from ..adapters.akquant_engine import ROTATION_DEFAULTS, _rotation_scores
-
-    params = {**ROTATION_DEFAULTS, **spec.strategy.params}
-    scores = _rotation_scores([str(e) for e in params["expressions"]], frames)
-    latest = max(scores) if scores else None
-    day = scores.get(latest, {}) if latest else {}
-    ranked = [s for s, _v in sorted(day.items(), key=lambda kv: kv[1], reverse=True)]
-    target = set(ranked[: int(params["top_k"])])
-    signals = []
-    for symbol, df in frames.items():
-        in_target = symbol in target
-        signals.append(
-            {
-                "symbol": symbol,
-                "action": "HOLD" if in_target else "STAY_FLAT",
-                "position": 1.0 if in_target else 0.0,
-                "score": round(day.get(symbol, float("nan")), 4) if day else None,
-                "last_close": round(float(df["close"].iloc[-1]), 4),
-                "last_bar_date": str(pd_date(df)),
-                "bars": len(df),
-            }
-        )
-    signals.sort(key=lambda s: (s["action"] != "HOLD", s["symbol"]))
-    return signals

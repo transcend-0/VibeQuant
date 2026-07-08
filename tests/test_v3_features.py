@@ -127,7 +127,7 @@ def test_deployment_requires_strategy_and_real_data(tmp_path, monkeypatch):
         "kind: strategy\n"
         "name: t\n"
         "data: {source: etf, symbols: [510300], start: '2023-01-01'}\n"
-        "strategy: {name: custom, params: {source: \"def signal(closes, position):\\n    return None\\n\"}}\n",
+        "strategy: {name: custom, params: {source: \"class Strategy(BaseStrategy):\\n    def on_bar(self, bar):\\n        pass\\n\"}}\n",
         email_to="a@b.c",
         run_at="16:30",
     )
@@ -136,8 +136,8 @@ def test_deployment_requires_strategy_and_real_data(tmp_path, monkeypatch):
 
 
 def test_compute_signals_actions():
-    # synthetic source keeps this offline; compute_signals accepts any spec.
-    # no fixed buy_hold template anymore (round 14) -- same logic as custom.
+    # synthetic source keeps this offline; compute_signals runs the real
+    # backtest through today and reads the resulting position history.
     spec = TaskSpec.from_dict(
         {
             "kind": "strategy",
@@ -150,8 +150,10 @@ def test_compute_signals_actions():
             "strategy": {
                 "name": "custom",
                 "params": {
-                    "source": "def signal(closes, position):\n"
-                    "    return 1.0 if position <= 0 else None\n",
+                    "source": "class Strategy(BaseStrategy):\n"
+                    "    def on_bar(self, bar):\n"
+                    "        if self.get_position(bar.symbol) <= 0:\n"
+                    "            self.order_target_percent(target_percent=0.95, symbol=bar.symbol)\n",
                 },
             },
         }
@@ -160,7 +162,7 @@ def test_compute_signals_actions():
     assert len(signals) == 1
     sig = signals[0]
     assert sig["action"] in ("BUY", "SELL", "HOLD", "STAY_FLAT")
-    assert sig["position"] == 1.0  # buy-and-hold always ends long
+    assert sig["position"] > 0  # buy-and-hold always ends long
     assert sig["last_close"] > 0
 
 

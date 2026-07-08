@@ -7,20 +7,22 @@ data:
   path: data/sample
   symbols: [DEMO]
 strategy:
-  name: custom
+  name: momentum
   params:
-    warmup: 21
     source: |
-      def signal(closes, position):
+      class Strategy(BaseStrategy):
           lookback, threshold = 20, 0.02
-          if len(closes) < lookback + 1:
-              return None
-          ret = closes[-1] / closes[-1 - lookback] - 1.0
-          if position <= 0 and ret > threshold:
-              return 1.0
-          if position > 0 and ret < 0:
-              return 0.0
-          return None
+
+          def on_bar(self, bar):
+              closes = self.get_history(count=self.lookback + 1, symbol=bar.symbol, field="close")
+              if len(closes) < self.lookback + 1:
+                  return
+              ret = closes[-1] / closes[0] - 1.0
+              position = self.get_position(bar.symbol)
+              if position <= 0 and ret > self.threshold:
+                  self.order_target_percent(target_percent=0.95, symbol=bar.symbol)
+              elif position > 0 and ret < 0:
+                  self.close_position(bar.symbol)
 execution:
   mode: backtest
   initial_cash: 1000000

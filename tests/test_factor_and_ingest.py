@@ -152,7 +152,7 @@ def test_idea_to_taskspec_factor_and_strategy():
         title_zh="短期反转",
         factor_expressions=["Rev5 = -Delta(Close, 5) / Delay(Close, 5)"],
         strategy_name="custom",
-        strategy_params={"source": "def signal(closes, position):\n    return None\n"},
+        strategy_params={"source": "class Strategy(BaseStrategy):\n    def on_bar(self, bar):\n        pass\n"},
     )
     spec = idea_to_taskspec(idea, mode="factor", language="en")
     assert spec.kind == "factor" and spec.factor.expressions
@@ -166,7 +166,7 @@ def test_idea_to_taskspec_strategy_mode_keeps_full_universe():
     # per-symbol templates run independently across every symbol.
     idea = Idea(key="mom", kind="strategy", title_en="momentum", title_zh="动量",
                 strategy_name="custom",
-                strategy_params={"source": "def signal(closes, position):\n    return None\n"})
+                strategy_params={"source": "class Strategy(BaseStrategy):\n    def on_bar(self, bar):\n        pass\n"})
     universe = [f"S{i}" for i in range(24)]
     spec = idea_to_taskspec(idea, mode="strategy", universe=universe)
     assert spec.data.symbols == universe
@@ -311,13 +311,16 @@ def test_llm_extract_ideas_raises_on_bad_json(fake_llm):
 
 
 # -------------------------------------------------------------------- intent
+_NOOP_SOURCE = 'class Strategy(BaseStrategy):\\n    def on_bar(self, bar):\\n        pass\\n'
+
+
 def test_intent_detects_etf_codes(fake_llm):
     fake_llm(lambda user, system: json.dumps({
-        "task_yaml": """
+        "task_yaml": f"""
 name: etf-510300
 kind: strategy
-data: {source: etf, symbols: ["510300"]}
-strategy: {name: custom, params: {source: "def signal(closes, position):\\n    return None\\n"}}
+data: {{source: etf, symbols: ["510300"]}}
+strategy: {{name: custom, params: {{source: "{_NOOP_SOURCE}"}}}}
 """,
         "clarifications": [], "recognized": True,
     }))
@@ -325,11 +328,11 @@ strategy: {name: custom, params: {source: "def signal(closes, position):\\n    r
     assert parsed.spec.data.source == "etf"
 
     fake_llm(lambda user, system: json.dumps({
-        "task_yaml": """
+        "task_yaml": f"""
 name: stock-600000
 kind: strategy
-data: {source: stock, symbols: ["600000"]}
-strategy: {name: custom, params: {source: "def signal(closes, position):\\n    return None\\n"}}
+data: {{source: stock, symbols: ["600000"]}}
+strategy: {{name: custom, params: {{source: "{_NOOP_SOURCE}"}}}}
 """,
         "clarifications": [], "recognized": True,
     }))

@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional
 
 from ..dsl import DataSpec, FactorSpec, ReportSpec, StrategySpec, TaskSpec
 from ..llm import LLMClient, LLMError, query_structured
+from ..strategies.custom import DEFAULT_SOURCE as CUSTOM_DEFAULT_SOURCE
+from ..strategies.factor_rotation import DEFAULT_SOURCE as ROTATION_DEFAULT_SOURCE
 from .ingest import Idea
 from .llm_ideas import _strip_fence
 
@@ -23,8 +25,8 @@ def idea_to_taskspec(
     idea: Idea,
     mode: str,  # "factor" | "strategy" — the UI mode requesting the task
     universe: Optional[List[str]] = None,
-    start: str = "2021-01-01",
-    end: str = "2024-12-31",
+    start: str = "2025-01-01",
+    end: str = "2025-12-31",
     language: str = "en",
     intent: str = "",
 ) -> TaskSpec:
@@ -35,6 +37,10 @@ def idea_to_taskspec(
     template); otherwise a sensible default is chosen.
     """
     symbols = [str(s) for s in (universe or DEFAULT_ETF_UNIVERSE)]
+    # no explicit override, or the override happens to equal the pool
+    # (extract_universe_hint returns this exact list when the user names
+    # the pool by name) -- either way this IS the curated pool, tag it.
+    universe_key = "pool24" if symbols == list(DEFAULT_ETF_UNIVERSE) else "custom"
     slug = re.sub(r"[^a-zA-Z0-9-]+", "-", idea.key)[:30].strip("-")
 
     if mode == "factor":
@@ -43,7 +49,10 @@ def idea_to_taskspec(
             name=f"factor-{slug}",
             kind="factor",
             intent=intent or idea.title_en,
-            data=DataSpec(source="etf", symbols=symbols, start=start, end=end),
+            data=DataSpec(
+                source="etf", universe=universe_key, symbols=symbols,
+                start=start, end=end,
+            ),
             factor=FactorSpec(expressions=expressions),
             report=ReportSpec(language=language),
         )
@@ -54,21 +63,20 @@ def idea_to_taskspec(
         elif idea.factor_expressions:
             # no strategy template was proposed, but real factor
             # expressions were (e.g. a factor-heavy research report) --
-            # bridge them into a multi-factor rotation rather than
-            # silently falling back to a template-less "momentum" guess.
+            # bridge them into a multi-factor rotation (the standard
+            # top-K/FACTOR_SCORES skeleton, fully editable from here) rather
+            # than silently falling back to a template-less "momentum" guess.
             strategy_name = "factor_rotation"
             params = {
                 "expressions": list(idea.factor_expressions),
-                "top_k": 5,
-                "rebalance_days": 20,
+                "source": ROTATION_DEFAULT_SOURCE,
             }
         else:
             # no strategy_name and no factor_expressions to bridge from --
             # only reachable via direct calls that bypass _brief_payload's
-            # filter. Fall back to a no-op custom signal (there's no fixed
-            # rule template anymore) rather than crashing.
+            # filter. Fall back to a no-op skeleton rather than crashing.
             strategy_name = "custom"
-            params = {}
+            params = {"source": CUSTOM_DEFAULT_SOURCE}
         spec = TaskSpec(
             name=f"strategy-{slug}",
             kind="strategy",
@@ -76,7 +84,10 @@ def idea_to_taskspec(
             # a "custom" per-symbol signal runs independently on every
             # symbol via the adapter — no reason to truncate to one when
             # the caller asked for the whole universe.
-            data=DataSpec(source="etf", symbols=symbols, start=start, end=end),
+            data=DataSpec(
+                source="etf", universe=universe_key, symbols=symbols,
+                start=start, end=end,
+            ),
             strategy=StrategySpec(name=strategy_name, params=params),
             report=ReportSpec(language=language),
         )

@@ -48,6 +48,7 @@ from src.research.tasks import (
 )
 from src.runner import run_task
 from src.strategies import REGISTRY
+from src.strategies.factor_rotation import DEFAULT_SOURCE as ROTATION_DEFAULT_SOURCE
 
 logger = logging.getLogger(__name__)
 
@@ -224,8 +225,8 @@ def _brief_payload(brief, req_mode: str, universe, start, end, language):
             idea,
             mode=mode,
             universe=universe,
-            start=start or "2021-01-01",
-            end=end or "2024-12-31",
+            start=start or "2025-01-01",
+            end=end or "2025-12-31",
             language=language,
             intent=intent,
         )
@@ -250,6 +251,7 @@ def _brief_payload(brief, req_mode: str, universe, start, end, language):
                 "idea": idea.to_dict(),
                 "mode": mode,
                 "yaml": spec.to_yaml(),
+                "task": spec.to_dict(),
                 "plan": _plan_payload(spec),
             }
         )
@@ -277,8 +279,7 @@ def _brief_payload(brief, req_mode: str, universe, start, end, language):
                 strategy_name="factor_rotation",
                 strategy_params={
                     "expressions": all_exprs,
-                    "top_k": 5,
-                    "rebalance_days": 20,
+                    "source": ROTATION_DEFAULT_SOURCE,
                 },
             )
             try:
@@ -293,11 +294,15 @@ def _brief_payload(brief, req_mode: str, universe, start, end, language):
                     "idea": combined.to_dict(),
                     "mode": "strategy",
                     "yaml": spec.to_yaml(),
+                    "task": spec.to_dict(),
                     "plan": _plan_payload(spec),
                 })
 
+    # keep the brief focused: a combined suggestion (if any) plus at most
+    # 2 per-idea ones is enough differentiation without overwhelming the
+    # researcher with near-duplicate tasks.
     payload = brief.to_dict()
-    payload["suggestions"] = suggestions
+    payload["suggestions"] = suggestions[:3]
     payload["default_universe"] = DEFAULT_ETF_UNIVERSE
     return payload
 
@@ -312,37 +317,20 @@ def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
-def _template_code(name: str) -> str:
-    """Python source of a strategy template (adapter class for rotation)."""
-    import importlib
-    import inspect
-
-    try:
-        if name == "factor_rotation":
-            from src.adapters import akquant_engine as eng
-
-            return (
-                inspect.getsource(eng._rotation_scores)
-                + "\n\n"
-                + inspect.getsource(eng._RotationStrategy)
-            )
-        module = importlib.import_module(f"src.strategies.{name}")
-        return inspect.getsource(module)
-    except Exception as exc:
-        return f"# source unavailable: {exc}"
-
-
 @app.get("/api/strategies")
 def strategies() -> List[Dict[str, Any]]:
+    """Starter skeletons for the workbench (every strategy runs the same
+    way -- see src/adapters/akquant_engine.py -- these are just default
+    params.source text, not a fixed template registry)."""
     return [
         {
             "name": name,
-            "summary_en": tpl.summary_en,
-            "summary_zh": tpl.summary_zh,
-            "defaults": tpl.defaults,
-            "code": _template_code(name),
+            "summary_en": skeleton.summary_en,
+            "summary_zh": skeleton.summary_zh,
+            "source": skeleton.source,
+            "params": skeleton.params,
         }
-        for name, tpl in sorted(REGISTRY.items())
+        for name, skeleton in sorted(REGISTRY.items())
     ]
 
 
@@ -428,8 +416,8 @@ async def ingest_pdf(
     file: UploadFile = File(...),
     mode: str = Form("factor"),
     language: str = Form("en"),
-    start: str = Form("2021-01-01"),
-    end: str = Form("2024-12-31"),
+    start: str = Form("2025-01-01"),
+    end: str = Form("2025-12-31"),
     question: str = Form(""),
 ) -> Dict[str, Any]:
     if not (file.filename or "").lower().endswith(".pdf"):
@@ -478,6 +466,21 @@ def run_detail(run_id: str) -> Dict[str, Any]:
         import json
 
         detail["factor"] = json.loads(factor_file.read_text(encoding="utf-8"))
+    # clean Python/expressions for the UI's code panel -- re-parse the
+    # persisted task.yaml rather than trust its own params/factor shape,
+    # since PyYAML renders a multi-line params.source as an escaped
+    # one-liner, not something worth re-deriving by hand here.
+    try:
+        spec = TaskSpec.from_yaml(detail.get("task_yaml", ""))
+        detail["strategy_source"] = (
+            spec.strategy.params.get("source", "") if spec.kind == "strategy" else ""
+        )
+        detail["factor_expressions"] = (
+            list(spec.factor.expressions) if spec.kind == "factor" else []
+        )
+    except DSLError:
+        detail.setdefault("strategy_source", "")
+        detail.setdefault("factor_expressions", [])
     return detail
 
 
@@ -712,8 +715,10 @@ async def refine(req: RefineRequest) -> Dict[str, Any]:
     try:
         spec = TaskSpec.from_yaml(out["yaml"])
         out["plan"] = _plan_payload(spec)
+        out["task"] = spec.to_dict()
     except DSLError:
         out["plan"] = []
+        out["task"] = None
     return out
 
 
@@ -825,7 +830,7 @@ async def universe_symbols(market: str, key: str) -> Dict[str, Any]:
 # -------------------------------------------------------- auto-optimize
 class AutoOptimizeRequest(BaseModel):
     yaml_text: str
-    rounds: int = 3
+    result_summary: Optional[Dict[str, Any]] = None
     language: str = "en"
 
 
@@ -836,7 +841,7 @@ async def auto_optimize_endpoint(req: AutoOptimizeRequest) -> Dict[str, Any]:
     try:
         async with _run_lock:
             return await asyncio.to_thread(
-                auto_optimize, req.yaml_text, req.rounds, req.language
+                auto_optimize, req.yaml_text, req.result_summary, req.language
             )
     except DSLError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

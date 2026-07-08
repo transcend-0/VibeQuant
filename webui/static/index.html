@@ -56,7 +56,6 @@ textarea, input, select {
 textarea { resize: vertical; }
 textarea.code { font-family: var(--mono); font-size: 13px; white-space: pre; }
 #sourceInput { min-height: 64px; }
-#yamlEdit { min-height: 230px; }
 #factorExprs { min-height: 88px; font-family: var(--mono); font-size: 13px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
 .chips button { font-size: 12.5px; padding: 4px 10px; border-radius: 999px;
@@ -126,8 +125,14 @@ table.list tr.clickable:hover td { background: var(--surface-0); }
 .spin { display: none; color: var(--text-secondary); font-size: 13.5px; }
 footer { text-align: center; color: var(--text-muted); font-size: 12.5px; padding: 8px 0 24px; }
 details > summary { cursor: pointer; }
-pre.sig { background: var(--surface-0); border: 1px solid var(--border); border-radius: 8px;
+.sig { background: var(--surface-0); border: 1px solid var(--border); border-radius: 8px;
   padding: 10px; font-family: var(--mono); font-size: 12.5px; overflow-x: auto; }
+.foldrow { display: flex; white-space: pre; line-height: 1.5; }
+.foldmarker { flex: 0 0 14px; color: var(--text-muted); user-select: none; text-align: center; }
+.foldmarker.can-fold { cursor: pointer; }
+.foldmarker.can-fold:hover { color: var(--accent); }
+.foldhint { color: var(--text-muted); font-style: italic; }
+.foldview.editable { min-height: 230px; outline: none; cursor: text; }
 </style>
 </head>
 <body>
@@ -182,13 +187,21 @@ pre.sig { background: var(--surface-0); border: 1px solid var(--border); border-
       <div style="grid-column: 1 / -1"><label class="small" data-i18n="f_symbols"></label>
         <input type="text" id="stratSymbols"></div>
       <div><label class="small" data-i18n="builder_start"></label>
-        <input type="date" id="stratStart" value="2021-01-01"></div>
+        <input type="date" id="stratStart" value="2025-01-01"></div>
       <div><label class="small" data-i18n="builder_end"></label>
-        <input type="date" id="stratEnd" value="2024-12-31"></div>
+        <input type="date" id="stratEnd" value="2025-12-31"></div>
       <div><label class="small" data-i18n="s_template"></label>
         <select id="stratTemplate"></select></div>
-      <div><label class="small" data-i18n="s_params"></label>
-        <input type="text" id="stratParams" class="mono" value="{}"></div>
+      <div><label class="small" data-i18n="s_history_depth"></label>
+        <input type="number" id="stratHistoryDepth" min="30" value="300"></div>
+    </div>
+    <div id="stratExprBox" style="margin-top:10px; display:none">
+      <label class="small" data-i18n="s_expressions"></label>
+      <textarea id="stratExprs" class="mono" style="min-height:60px">Mom20 = Delta(Close, 20) / Delay(Close, 20)</textarea>
+    </div>
+    <div style="margin-top:10px">
+      <label class="small" data-i18n="s_code"></label>
+      <textarea class="code" id="stratSource" spellcheck="false" style="min-height:260px"></textarea>
     </div>
     <div class="row">
       <button class="primary" id="stratBuildBtn" data-i18n="build_btn"></button>
@@ -216,9 +229,9 @@ pre.sig { background: var(--surface-0); border: 1px solid var(--border); border-
       <div style="grid-column: 1 / -1"><label class="small" data-i18n="f_symbols"></label>
         <input type="text" id="universeInput"></div>
       <div><label class="small" data-i18n="builder_start"></label>
-        <input type="date" id="startDate" value="2021-01-01"></div>
+        <input type="date" id="startDate" value="2025-01-01"></div>
       <div><label class="small" data-i18n="builder_end"></label>
-        <input type="date" id="endDate" value="2024-12-31"></div>
+        <input type="date" id="endDate" value="2025-12-31"></div>
     </div>
     <div class="grid3">
       <div><label class="small" data-i18n="f_neut"></label>
@@ -246,12 +259,12 @@ pre.sig { background: var(--surface-0); border: 1px solid var(--border); border-
     </div>
   </div>
 
-  <div class="card" id="planCard" style="display:none">
+  <div id="planCard" style="display:none; margin-top:14px; padding-top:14px; border-top:1px solid var(--border)">
     <h2 data-i18n="plan_title"></h2>
     <div id="clarifications"></div>
     <ol class="plan" id="planList"></ol>
     <h2 style="margin-top:14px" data-i18n="yaml_title"></h2>
-    <textarea class="code" id="yamlEdit" spellcheck="false"></textarea>
+    <div class="sig foldview editable" id="yamlEdit" contenteditable="true" spellcheck="false"></div>
     <div class="row">
       <button class="primary" id="runBtn" data-i18n="run_btn"></button>
       <button id="deployFromTaskBtn" data-i18n="deploy_from_task"></button>
@@ -278,24 +291,28 @@ pre.sig { background: var(--surface-0); border: 1px solid var(--border); border-
     </div>
     <div id="refineOut"></div>
 
+    <div id="errorResult" style="display:none">
+      <div class="err" id="errorMessage" style="white-space:pre-wrap"></div>
+      <details style="margin-top:10px" open>
+        <summary class="muted" id="errorCodeLabel"></summary>
+        <div class="sig" id="errorTaskYaml"></div>
+      </details>
+    </div>
+
     <div id="strategyResult" style="display:none">
       <div class="tiles" id="tiles"></div>
       <details style="margin-top:12px">
         <summary class="muted" data-i18n="code_strategy"></summary>
-        <pre class="sig" id="strategyCode"></pre>
+        <div class="sig" id="strategyCode"></div>
       </details>
       <h2 style="margin-top:16px" data-i18n="akq_report_title"></h2>
       <div id="frameBox"></div>
-      <details style="margin-top:12px">
-        <summary class="muted" data-i18n="report_toggle"></summary>
-        <div class="report" id="reportMd"></div>
-      </details>
     </div>
 
     <div id="factorResult" style="display:none">
       <details style="margin-bottom:10px">
         <summary class="muted" data-i18n="code_factor"></summary>
-        <pre class="sig" id="factorCode"></pre>
+        <div class="sig" id="factorCode"></div>
       </details>
       <div style="overflow-x:auto"><table class="stats" id="factorStats"></table></div>
       <div class="chips" id="factorChips" style="margin-top:10px"></div>
@@ -304,10 +321,6 @@ pre.sig { background: var(--surface-0); border: 1px solid var(--border); border-
       <h2 style="margin-top:16px" data-i18n="layers_title"></h2>
       <div class="chartwrap" id="layerWrap"><div class="tooltip"></div><div class="chartbox"></div></div>
       <div class="legend" id="layerLegend"></div>
-      <details style="margin-top:12px">
-        <summary class="muted" data-i18n="report_toggle"></summary>
-        <div class="report" id="factorReportMd"></div>
-      </details>
     </div>
   </div>
 
@@ -407,7 +420,6 @@ const I18N = {
     akq_report_title: "Strategy report (akquant HTML)",
     ic_title: "IC series (cross-sectional Spearman)",
     layers_title: "Quantile layers · cumulative forward returns",
-    report_toggle: "Markdown report",
     history_title: "Results", hist_strategy: "Strategy results",
     hist_factor: "Factor results", no_runs: "No runs yet.",
     col_market: "Market", col_universe: "Universe",
@@ -449,10 +461,13 @@ const I18N = {
     email_title: "Signal email (optional)",
     email_explain: "Create config/email.yaml from config/email.example.yaml (SMTP host, account, auth code). Deployments email through it; without it they archive to files.",
     f_market: "Market", auto_btn: "Agent auto-optimize",
-    auto_hist: "Auto-optimization history", auto_obj: "objective",
-    auto_best: "best round loaded into the task editor",
+    auto_hist: "Agent iteration", auto_obj: "objective",
+    auto_best: "revised task loaded into the editor",
     sbuilder_title: "Strategy workbench",
-    s_universe: "Universe", s_template: "Strategy template", s_params: "Params (JSON)",
+    s_universe: "Universe", s_template: "Strategy template",
+    s_code: "Strategy code — an editable akquant Strategy class (see akquant's own Strategy API: on_bar, get_position, buy/sell, order_target_percent/weights, get_history)",
+    s_history_depth: "History depth (bars kept for get_history)",
+    s_expressions: "Factor expressions (feed FACTOR_SCORES into the code below)",
     tpl_rule: "Rule-based", tpl_factor: "Multi-factor rotation",
     tpl_ml: "Machine learning", tpl_custom: "Custom free-form",
     f_maxpos: "max_position (×ADV20)", f_maxtrade: "max_trade (×ADV20)",
@@ -473,7 +488,7 @@ const I18N = {
     view_strategy: "策略研究", view_factor: "因子研究",
     view_deploy: "部署",
     input_title: "1 · 研究输入 —— 想法、arXiv 链接、论坛 URL 或 PDF",
-    analyze_btn: "解析",
+    analyze_btn: "分析",
     pdf_btn: "上传 PDF…", analyzing: "分析中…",
     brief_title: "研究简报", suggestions_title: "建议任务",
     builder_title: "因子工作台",
@@ -491,7 +506,6 @@ const I18N = {
     akq_report_title: "策略报告（akquant HTML）",
     ic_title: "IC 序列（横截面 Spearman）",
     layers_title: "分层回测 · 累计前瞻收益",
-    report_toggle: "Markdown 报告",
     history_title: "结果列表", hist_strategy: "策略结果",
     hist_factor: "因子结果", no_runs: "暂无运行记录。",
     col_market: "市场", col_universe: "Universe",
@@ -531,11 +545,14 @@ const I18N = {
     llm_on: "LLM：已连接", llm_off: "LLM：未配置",
     email_title: "信号邮件（可选）",
     email_explain: "参考 config/email.example.yaml 创建 config/email.yaml（SMTP 服务器、账号、授权码）。配置后部署会自动发信，否则信号存档为文件。",
-    f_market: "市场 Market", auto_btn: "Agent 自动迭代",
-    auto_hist: "自动优化历史", auto_obj: "目标值",
-    auto_best: "最优轮次已载入任务编辑器",
+    f_market: "市场 Market", auto_btn: "AI 自动优化",
+    auto_hist: "AI 优化结果", auto_obj: "目标值",
+    auto_best: "修订后的任务已载入任务编辑器",
     sbuilder_title: "策略工作台",
-    s_universe: "标的池 Universe", s_template: "策略模板", s_params: "参数（JSON）",
+    s_universe: "标的池 Universe", s_template: "策略模板",
+    s_code: "策略代码——可编辑的 akquant Strategy 类（akquant 原生 API：on_bar、get_position、buy/sell、order_target_percent/weights、get_history）",
+    s_history_depth: "历史窗口（get_history 可取的历史条数）",
+    s_expressions: "因子表达式（注入下方代码可用的 FACTOR_SCORES）",
     tpl_rule: "规则策略", tpl_factor: "多因子轮动",
     tpl_ml: "机器学习", tpl_custom: "自定义",
     f_maxpos: "max_position（×ADV20 成交额）", f_maxtrade: "max_trade（×ADV20 成交额）",
@@ -575,6 +592,12 @@ const layerColor = (i, n) => {
 const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 let lastResult = null, historyCache = [], deploymentsCache = [];
+// strategy/factor research each keep their own brief + plan so switching
+// the mode tab doesn't leak one mode's analysis into the other's cards.
+let modeState = {
+  strategy: { brief: null, task: null },
+  factor: { brief: null, task: null },
+};
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -624,9 +647,19 @@ function applyChrome() {
   if (research) {
     $("builderCard").style.display = view === "factor" ? "" : "none";
     $("strategyBuilderCard").style.display = view === "strategy" ? "" : "none";
+    // "确认计划" lives inside whichever workbench matches the current mode,
+    // so editing workbench fields and confirming the plan feel like one
+    // continuous flow instead of two separate cards.
+    (view === "factor" ? $("builderCard") : $("strategyBuilderCard")).appendChild($("planCard"));
     $("sourceInput").placeholder = (T()["ex_" + view] || [""])[0] || "";
     $("refineInput").placeholder = T().refine_ph || "";
     renderExamples();
+    const st = modeState[view];
+    if (st.brief) renderBrief(st.brief);
+    else { $("briefCard").style.display = "none"; $("briefHead").innerHTML = "";
+      $("briefSuggestions").innerHTML = ""; }
+    if (st.task) showTask(st.task.yaml, st.task.plan, st.task.clarifications, st.task.task, false);
+    else { $("planCard").style.display = "none"; }
   }
   if (view === "deploy") loadDeployments();
   if (view === "settings") loadLLMConfig();
@@ -655,51 +688,108 @@ function renderExamples() {
 /* ------------------------------------------------------- universes */
 let marketsCache = [], strategiesCache = [];
 
-// Only two backend templates exist now: factor_rotation (cross-sectional)
-// and custom (everything else, LLM/hand-authored Python). The workbench
-// still shows 4 conceptual entry points for a human filling out this
-// form -- "规则策略"/"机器学习"/"自定义" all map to strategy.name="custom"
-// under the hood, distinguished only by which default params.source
-// skeleton they start from.
-const RULE_SKELETON = `def signal(closes, position):
-    # closes: chronological closes up to and including today (list[float])
-    # position: current QUANTITY held for this symbol (0 if flat -- not a
-    # weight or percentage); return a new TARGET WEIGHT in [0, 1], or None
-    # to leave it unchanged (note the input/output units differ).
-    if len(closes) < 21:
-        return None
-    fast = sum(closes[-5:]) / 5
-    slow = sum(closes[-20:]) / 20
-    fast_prev = sum(closes[-6:-1]) / 5
-    slow_prev = sum(closes[-21:-1]) / 20
-    if fast_prev <= slow_prev and fast > slow:
-        return 1.0  # golden cross -> long
-    if fast_prev >= slow_prev and fast < slow:
-        return 0.0  # death cross -> flat
-    return None
+// Every strategy runs the same way: params.source defines a class
+// inheriting Strategy/BaseStrategy (akquant's own Strategy, injected into
+// scope), using akquant's real API directly -- no restrictive callback.
+// The workbench shows 4 conceptual entry points as starter skeletons for
+// that one contract; "多因子轮动" additionally exposes a factor-expression
+// box that feeds a precomputed FACTOR_SCORES global into the code below.
+const RULE_SKELETON = `class Strategy(BaseStrategy):
+    """5/20 day moving-average crossover (golden/death cross)."""
+
+    fast, slow = 5, 20
+
+    def on_bar(self, bar):
+        closes = self.get_history(count=self.slow + 1, symbol=bar.symbol, field="close")
+        if len(closes) < self.slow + 1:
+            return
+        fast_now = closes[-self.fast:].mean()
+        slow_now = closes[-self.slow:].mean()
+        fast_prev = closes[-self.fast - 1:-1].mean()
+        slow_prev = closes[-self.slow - 1:-1].mean()
+        position = self.get_position(bar.symbol)
+        if fast_prev <= slow_prev and fast_now > slow_now and position <= 0:
+            self.order_target_percent(target_percent=0.95, symbol=bar.symbol)
+        elif fast_prev >= slow_prev and fast_now < slow_now and position > 0:
+            self.close_position(bar.symbol)
 `;
 const ML_SKELETON = `import numpy as np
 
 
-def signal(closes, position):
-    # closes: chronological closes up to and including today (list[float])
-    # position: current QUANTITY held (0 if flat -- not a weight)
-    # return a new target weight in [0, 1], or None to leave it unchanged.
-    if len(closes) < 30:
-        return None
-    returns = np.diff(closes) / closes[:-1]
-    x, y = returns[:-1], returns[1:]
-    slope, intercept = np.polyfit(x, y, 1)
-    pred = intercept + slope * returns[-1]
-    return 1.0 if pred > 0 else 0.0
+class Strategy(BaseStrategy):
+    """Toy AR(1) regression on daily returns -> long/flat."""
+
+    lookback = 30
+
+    def on_bar(self, bar):
+        closes = self.get_history(count=self.lookback + 1, symbol=bar.symbol, field="close")
+        if len(closes) < self.lookback + 1:
+            return
+        returns = np.diff(closes) / closes[:-1]
+        x, y = returns[:-1], returns[1:]
+        slope, intercept = np.polyfit(x, y, 1)
+        pred = intercept + slope * returns[-1]
+        position = self.get_position(bar.symbol)
+        if pred > 0 and position <= 0:
+            self.order_target_percent(target_percent=0.95, symbol=bar.symbol)
+        elif pred <= 0 and position > 0:
+            self.close_position(bar.symbol)
+`;
+const ROTATION_SKELETON = `class Strategy(BaseStrategy):
+    """Hold the top-K symbols by FACTOR_SCORES, rebalance every N days."""
+
+    top_k = 5
+    rebalance_days = 5
+    max_position_pct = 0.95
+
+    def __init__(self):
+        super().__init__()
+        self.symbols = list(SYMBOLS)
+        self.day_count = -1
+        self.pending_target = None
+        self.held = set()
+
+    def on_daily_rebalance(self, trading_date, timestamp):
+        # two-phase rebalance: exit names leaving the portfolio today,
+        # enter new names tomorrow -- avoids cash-rejected buy orders.
+        if self.pending_target is not None:
+            self.order_target_weights(
+                target_weights=self.pending_target,
+                liquidate_unmentioned=False,
+                rebalance_tolerance=0.01,
+            )
+            self.held = set(self.pending_target)
+            self.pending_target = None
+
+        self.day_count += 1
+        if self.day_count % self.rebalance_days:
+            return
+        day_scores = FACTOR_SCORES.get(str(trading_date)[:10]) or {}
+        if len(day_scores) < self.top_k:
+            return
+        ranked = sorted(day_scores, key=day_scores.get, reverse=True)
+        weight = self.max_position_pct / self.top_k
+        target = {s: weight for s in ranked[: self.top_k]}
+
+        for symbol in self.held - set(target):
+            if float(self.get_position(symbol)) > 0:
+                self.close_position(symbol)
+        self.pending_target = target
+`;
+const CUSTOM_SKELETON = `class Strategy(BaseStrategy):
+    """Write your trading logic here."""
+
+    def on_bar(self, bar):
+        # self.get_position(bar.symbol) -> current quantity held (0 if flat)
+        # self.buy(symbol=..., quantity=...) / self.close_position(symbol=...)
+        # self.order_target_percent(symbol=..., target_percent=0.95)
+        pass
 `;
 const STRAT_TEMPLATE_GROUPS = [
-  { value: "rule", real: "custom", labelKey: "tpl_rule",
-    defaults: { source: RULE_SKELETON, warmup: 21 } },
-  { value: "factor", real: "factor_rotation", labelKey: "tpl_factor" },
-  { value: "ml", real: "custom", labelKey: "tpl_ml",
-    defaults: { source: ML_SKELETON, warmup: 30 } },
-  { value: "custom", real: "custom", labelKey: "tpl_custom" },
+  { value: "rule", real: "custom", labelKey: "tpl_rule", source: RULE_SKELETON },
+  { value: "factor", real: "factor_rotation", labelKey: "tpl_factor", source: ROTATION_SKELETON },
+  { value: "ml", real: "custom", labelKey: "tpl_ml", source: ML_SKELETON },
+  { value: "custom", real: "custom", labelKey: "tpl_custom", source: CUSTOM_SKELETON },
 ];
 function stratTemplateGroup() {
   return STRAT_TEMPLATE_GROUPS.find(g => g.value === $("stratTemplate").value)
@@ -771,12 +861,14 @@ function marketSource(which) {
 }
 function syncStratTemplate() {
   const g = stratTemplateGroup();
-  if (g.defaults) {  // "机器学习": a skeleton distinct from the bare "custom" default
-    $("stratParams").value = JSON.stringify(g.defaults);
-    return;
+  const isRotation = g.value === "factor";
+  $("stratExprBox").style.display = isRotation ? "" : "none";
+  $("stratSource").value = g.source || "";
+  if (isRotation) {
+    const t = strategiesCache.find(x => x.name === "factor_rotation");
+    const exprs = (t && t.params && t.params.expressions) || ["Mom20 = Delta(Close, 20) / Delay(Close, 20)"];
+    $("stratExprs").value = exprs.join("\n");
   }
-  const t = strategiesCache.find(x => x.name === g.real);
-  if (t) $("stratParams").value = JSON.stringify(t.defaults || {});
 }
 
 /* strategy workbench -> YAML */
@@ -799,9 +891,13 @@ function yamlParamValue(v, contIndent) {
   return JSON.stringify(s); // double-quoted YAML string syntax
 }
 $("stratBuildBtn").onclick = () => {
-  let params = {};
-  try { params = JSON.parse($("stratParams").value || "{}"); } catch (e) {
-    alert("params must be JSON"); return;
+  const g = stratTemplateGroup();
+  const params = { source: $("stratSource").value };
+  const historyDepth = parseInt($("stratHistoryDepth").value) || 300;
+  if (historyDepth !== 300) params.history_depth = historyDepth;
+  if (g.value === "factor") {
+    const exprs = $("stratExprs").value.split("\n").map(s => s.trim()).filter(Boolean);
+    if (exprs.length) params.expressions = exprs;
   }
   const symbols = $("stratSymbols").value.split(/[,，\s]+/).filter(Boolean);
   if (!symbols.length) return;
@@ -818,7 +914,7 @@ $("stratBuildBtn").onclick = () => {
     `  start: "${$("stratStart").value}"`,
     `  end: "${$("stratEnd").value}"`,
     "strategy:",
-    `  name: ${stratTemplateGroup().real}`,
+    `  name: ${g.real}`,
     ...(paramLines.length ? ["  params:", ...paramLines] : []),
     "report:", `  language: ${lang}`,
   ].join("\n");
@@ -827,7 +923,7 @@ $("stratBuildBtn").onclick = () => {
 
 /* --------------------------------------------------------- analyze */
 // Uploading a PDF only stages it (pendingPdfFile); no network call happens
-// until the user clicks "解析"/Analyze -- that's the single trigger point
+// until the user clicks "分析"/Analyze -- that's the single trigger point
 // for all analysis (text-only, URL/arXiv, or PDF+question).
 let pendingPdfFile = null;
 
@@ -857,8 +953,9 @@ $("analyzeBtn").onclick = async () => {
     if (!isUrl && view === "strategy") {
       const p = await postJson("/api/parse", { prompt: source });
       if (p.recognized) {
+        modeState[view].brief = null;
         $("briefCard").style.display = "none";
-        showTask(p.yaml, p.plan, p.clarifications);
+        showTask(p.yaml, p.plan, p.clarifications, p.task);
         return;
       }
     }
@@ -878,6 +975,7 @@ $("pdfFile").onchange = () => {
 $("pdfChipRemove").onclick = (e) => { e.preventDefault(); setPendingPdf(null); };
 
 function renderBrief(brief) {
+  modeState[view].brief = brief;
   $("briefCard").style.display = "";
   let head = `<div><b>${esc(brief.title || brief.source)}</b>
     <span class="badge">${esc(brief.source_type)}</span></div>`;
@@ -904,7 +1002,7 @@ function renderBrief(brief) {
       <div class="m">${T().evidence}: ${esc((idea.evidence || []).join(", "))}</div>
       <div class="m mono">${what}</div>
       <div class="m">${T().use_task}</div>`;
-    div.onclick = () => showTask(s.yaml, s.plan, []);
+    div.onclick = () => showTask(s.yaml, s.plan, [], s.task);
     box.appendChild(div);
   });
 }
@@ -935,7 +1033,8 @@ $("buildBtn").onclick = () => {
 };
 
 /* ---------------------------------------------------- task & plan */
-function showTask(yaml, plan, clarifications) {
+function showTask(yaml, plan, clarifications, task, scroll = true) {
+  modeState[view].task = { yaml, plan, clarifications, task };
   $("planCard").style.display = "";
   $("yamlEdit").value = yaml;
   $("clarifications").innerHTML = (clarifications || [])
@@ -943,17 +1042,65 @@ function showTask(yaml, plan, clarifications) {
   $("planList").innerHTML = (plan || [])
     .map(s => `<li>${esc(lang === "zh" ? s.title_zh : s.title_en)}</li>`).join("");
   $("runError").textContent = "";
-  $("planCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  if (task) syncWorkbenchFromTask(task);
+  if (scroll) $("planCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+/* NL analysis produced a task -- reflect it into the matching workbench
+   (strategy or factor) so the two stay in sync instead of the workbench
+   silently keeping stale/default values after an analysis. */
+function syncWorkbenchFromTask(task) {
+  if (!marketsCache.length || !task || !task.data) return;
+  const which = task.kind === "factor" ? "factor" : "strat";
+  const ids = _ids(which);
+  const mk = marketsCache.find(m => m.source === task.data.source) || currentMarket(which);
+  if (mk) {
+    $(ids.market).value = mk.key;
+    let universes = mk.universes;
+    if (which === "factor") {
+      universes = universes.filter(u =>
+        u.dynamic || u.key === "custom" || (u.symbols || []).length >= 2);
+    }
+    $(ids.uni).innerHTML = universes.map(u =>
+      `<option value="${esc(u.key)}">${esc(lang === "zh" ? u.label_zh : u.label_en)}</option>`).join("");
+    const uKey = universes.some(u => u.key === task.data.universe) ? task.data.universe : "custom";
+    $(ids.uni).value = uKey;
+  }
+  $(ids.syms).value = (task.data.symbols || []).join(", ");
+  $(which === "strat" ? "stratStart" : "startDate").value = task.data.start || "";
+  $(which === "strat" ? "stratEnd" : "endDate").value = task.data.end || "";
+  if (which === "strat" && task.strategy) {
+    // strategy.name is just a cosmetic label now (every strategy runs the
+    // same way) -- key the workbench's template select off whether
+    // params.expressions is actually present, not the label text.
+    const p = task.strategy.params || {};
+    const isRotation = !!(p.expressions && p.expressions.length);
+    $("stratTemplate").value = isRotation ? "factor" : "custom";
+    $("stratExprBox").style.display = isRotation ? "" : "none";
+    if (isRotation) $("stratExprs").value = p.expressions.join("\n");
+    $("stratSource").value = p.source || "";
+    $("stratHistoryDepth").value = p.history_depth || 300;
+  } else if (which === "factor" && task.factor) {
+    $("factorExprs").value = (task.factor.expressions || []).join("\n");
+    $("neutSelect").value = task.factor.neutralization || "none";
+    $("decayInput").value = task.factor.decay || 0;
+    $("truncInput").value = task.factor.truncation || 0;
+    $("maxPosInput").value = task.factor.max_position || 0;
+    $("maxTradeInput").value = task.factor.max_trade || 0;
+    $("quantInput").value = task.factor.quantiles || 4;
+  }
 }
 $("runBtn").onclick = async () => {
   await withSpin("runBtn", "runSpin", "runError", async () => {
     const yamlText = $("yamlEdit").value;
     const r = await postJson("/api/run", { yaml_text: yamlText });
-    if (!r.ok) { $("runError").textContent = `[${r.failed_step}] ${r.error}`; return; }
     r.task_yaml = yamlText;
     lastResult = r;
     renderResult(r);
-    loadHistory();
+    // a failed run still shows on the right (error + task yaml) so the
+    // refine/auto-optimize box below can be used to debug it -- only a
+    // successful run is worth adding to the history list.
+    if (r.ok) loadHistory();
   });
 };
 
@@ -967,6 +1114,9 @@ $("refineBtn").onclick = async () => {
         yaml_text: lastResult.task_yaml || $("yamlEdit").value,
         question,
         result_summary: {
+          ok: lastResult.ok,
+          error: lastResult.error,
+          failed_step: lastResult.failed_step,
           kind: lastResult.kind,
           metrics: lastResult.metrics,
           num_trades: lastResult.num_trades,
@@ -978,7 +1128,7 @@ $("refineBtn").onclick = async () => {
       $("refineOut").innerHTML =
         `<div class="note">💡 ${esc(out.explanation)} ` +
         `<span class="badge">${esc(out.engine)}</span></div>`;
-      showTask(out.yaml, out.plan, []);
+      showTask(out.yaml, out.plan, [], out.task);
     } catch (e) {
       $("refineOut").innerHTML = `<div class="err">${esc(e.message)}</div>`;
     }
@@ -994,24 +1144,43 @@ $("autoBtn").onclick = async () => {
   if (!lastResult) return;
   await withSpin("autoBtn", "refineSpin", null, async () => {
     try {
+      // one call = one new backtest: the agent reflects on lastResult
+      // (already known here, not re-run) and proposes+runs ONE revision.
       const out = await postJson("/api/auto_optimize", {
         yaml_text: lastResult.task_yaml || $("yamlEdit").value,
-        rounds: 2,  // baseline + one agent revision
+        result_summary: {
+          ok: lastResult.ok,
+          error: lastResult.error,
+          failed_step: lastResult.failed_step,
+          kind: lastResult.kind,
+          metrics: lastResult.metrics,
+          num_trades: lastResult.num_trades,
+          factor_stats: (lastResult.factor || {}).stats || [],
+        },
         language: lang,
       });
       const t = T();
-      let html = `<div class="note"><b>${t.auto_hist}</b> (${esc(out.objective_name)})<br>`;
-      out.history.forEach(h => {
-        const obj = h.objective == null ? "–" : h.objective;
-        const best = out.best && h.round === out.best.round ? " ⭐" : "";
-        html += `r${h.round}: ${t.auto_obj}=${obj}${best} — ${esc((h.explanation || "").slice(0, 110))}<br>`;
-      });
-      html += `${t.auto_best}</div>`;
+      const h = out.history[0];
+      const baseObj = out.baseline_objective == null ? "–" : out.baseline_objective;
+      const newObj = h.objective == null ? "–" : h.objective;
+      const html = `<div class="note"><b>${t.auto_hist}</b> ` +
+        `(${esc(out.objective_name)}: ${baseObj} → ${newObj})<br>` +
+        `${esc(h.explanation || "")}<br>${t.auto_best}</div>`;
       $("refineOut").innerHTML = html;
-      if (out.best) {
-        showTask(out.best.yaml, null, []);
+      showTask(h.yaml, null, [], h.task);
+      if (h.ok) {
         await loadHistory();
-        await openRun(out.best.run_id, false);
+        await openRun(h.run_id, false);
+      } else {
+        // the revision itself failed to backtest -- its run was never
+        // persisted to history, so openRun would 404. Show the error
+        // inline instead, same as a manually run failure.
+        lastResult = {
+          ok: false, run_id: h.run_id, kind: h.kind,
+          error: h.error, failed_step: h.failed_step,
+          task_yaml: h.yaml,
+        };
+        renderResult(lastResult);
       }
     } catch (e) {
       $("refineOut").innerHTML = `<div class="err">${esc(e.message)}</div>`;
@@ -1064,9 +1233,129 @@ function showDetailPanel() {
 }
 $("resultBackBtn").onclick = () => { showHistoryPanel(); loadHistory(); };
 
+/* ------------------------------------------- indentation-based folding */
+// VSCode's default folding (no language server) is indentation-based: a
+// line is a fold header when the next non-blank line is more indented
+// than it; the fold range runs while indentation stays greater (blank
+// lines pass through). This mirrors that for plain-text display of YAML
+// and Python alike, with no per-language parsing needed -- EXCEPT PyYAML's
+// default block-sequence style, which keeps `- item` list entries at the
+// SAME indentation as their parent key (not deeper), e.g.:
+//   symbols:
+//   - '510300'
+//   - '510500'
+// so a bare `key:` line followed by a same-indent `- ` line is also
+// treated as a fold header, with the range running through the
+// contiguous same-indent list items (and any deeper-indented continuation
+// lines within them).
+function computeFoldRanges(lines) {
+  const indentOf = line => line.trim() === "" ? null : line.match(/^ */)[0].length;
+  const isListItem = (line, ind) => {
+    const rest = line.slice(ind);
+    return rest === "-" || rest.startsWith("- ");
+  };
+  const ranges = {}; // header line index -> exclusive end index
+  for (let i = 0; i < lines.length; i++) {
+    const ind = indentOf(lines[i]);
+    if (ind == null || isListItem(lines[i], ind)) continue;
+    let j = i + 1;
+    while (j < lines.length && indentOf(lines[j]) == null) j++;
+    if (j >= lines.length) continue;
+    const nextInd = indentOf(lines[j]);
+    const bareKey = lines[i].trim().endsWith(":");
+    const deeper = nextInd > ind;
+    const sameIndentList = bareKey && nextInd === ind && isListItem(lines[j], nextInd);
+    if (!deeper && !sameIndentList) continue;
+    let k = j;
+    while (k < lines.length) {
+      const kind = indentOf(lines[k]);
+      if (kind == null) { k++; continue; }
+      if (kind > ind || (kind === ind && isListItem(lines[k], kind))) { k++; continue; }
+      break;
+    }
+    ranges[i] = k;
+  }
+  return ranges;
+}
+
+// Renders `text` into `container` as individually foldable lines: a
+// small ▸/▾ gutter marker per foldable block, click to collapse/expand.
+// Read-only display only -- folding just toggles row visibility, it
+// never mutates `text` itself.
+function renderFoldableLines(container, text) {
+  container.innerHTML = "";
+  const lines = (text || "").split("\n");
+  const ranges = computeFoldRanges(lines);
+  const folded = new Set();
+  const rows = [];
+  const hints = [];
+  function updateVisibility() {
+    const hidden = new Array(lines.length).fill(false);
+    folded.forEach(h => { for (let i = h + 1; i < ranges[h]; i++) hidden[i] = true; });
+    rows.forEach((row, i) => { row.style.display = hidden[i] ? "none" : ""; });
+    hints.forEach((hint, i) => { if (hint) hint.style.display = folded.has(i) ? "" : "none"; });
+  }
+  lines.forEach((line, i) => {
+    const row = document.createElement("div");
+    row.className = "foldrow";
+    const marker = document.createElement("span");
+    marker.className = "foldmarker";
+    if (ranges[i] != null) {
+      marker.classList.add("can-fold");
+      marker.textContent = "▾";
+      marker.onclick = () => {
+        if (folded.has(i)) folded.delete(i); else folded.add(i);
+        marker.textContent = folded.has(i) ? "▸" : "▾";
+        updateVisibility();
+      };
+    }
+    const content = document.createElement("span");
+    content.textContent = line || " ";
+    row.appendChild(marker);
+    row.appendChild(content);
+    if (ranges[i] != null) {
+      const hint = document.createElement("span");
+      hint.className = "foldhint";
+      hint.style.display = "none";
+      hint.textContent = ` ⋯ ${ranges[i] - i - 1} lines`;
+      row.appendChild(hint);
+      hints[i] = hint;
+    } else {
+      hints[i] = null;
+    }
+    container.appendChild(row);
+    rows.push(row);
+  });
+}
+
+// the clean Python/expressions the server derived from the parsed spec --
+// never re-derived from task_yaml text here, since PyYAML renders a
+// multi-line params.source as an escaped one-liner, not readable code.
+function codeForResult(r) {
+  if (r.kind === "factor") {
+    const exprs = r.factor_expressions || [];
+    return exprs.length ? exprs.join("\n") : "–";
+  }
+  return r.strategy_source || "";
+}
 function renderResult(r) {
   showDetailPanel();
-  $("runIdLabel").textContent = r.run_id;
+  $("runIdLabel").textContent = r.run_id || "";
+  if (!r.ok) {
+    $("validBadge").style.display = "none"; $("validBox").innerHTML = "";
+    $("strategyResult").style.display = "none";
+    $("factorResult").style.display = "none";
+    $("errorResult").style.display = "";
+    $("errorMessage").textContent = `[${r.failed_step || "?"}] ${r.error || ""}`;
+    // show the relevant code (strategy Strategy class / factor
+    // expressions), not the whole task DSL -- that's what you'd actually
+    // want to look at to debug or hand to refine/auto-optimize.
+    const isFactor = r.kind === "factor";
+    $("errorCodeLabel").textContent = T()[isFactor ? "code_factor" : "code_strategy"];
+    renderFoldableLines($("errorTaskYaml"), codeForResult(r));
+    return;
+  }
+  $("errorResult").style.display = "none";
   renderValidation(r.validation);
   const isFactor = r.kind === "factor";
   $("strategyResult").style.display = isFactor ? "none" : "";
@@ -1078,32 +1367,9 @@ function strategyFrame(runId) {
   return `<iframe class="reportframe" src="${src}"></iframe>
     <div style="margin-top:6px"><a href="${src}" target="_blank">${T().open_report}</a></div>`;
 }
-function yamlSection(yamlText, key) {
-  const lines = (yamlText || "").split("\n");
-  const out = [];
-  let inSection = false;
-  for (const line of lines) {
-    if (new RegExp("^" + key + ":").test(line)) { inSection = true; out.push(line); continue; }
-    if (inSection) {
-      if (/^[A-Za-z_]/.test(line)) break;  // next top-level key
-      out.push(line);
-    }
-  }
-  return out.join("\n").trimEnd();
-}
-function strategyNameFromYaml(yamlText) {
-  const section = yamlSection(yamlText, "strategy");
-  const m = section.match(/name:\s*(\S+)/);
-  return m ? m[1] : null;
-}
 
 function renderStrategyResult(r) {
-  const yamlText = r.task_yaml || $("yamlEdit").value || "";
-  const name = strategyNameFromYaml(yamlText);
-  const tpl = strategiesCache.find(t => t.name === name);
-  $("strategyCode").textContent =
-    (yamlSection(yamlText, "strategy") || "") +
-    (tpl && tpl.code ? "\n\n# ---- template source ----\n" + tpl.code : "");
+  renderFoldableLines($("strategyCode"), codeForResult(r));
   const m = r.metrics || {};
   const retCls = m.total_return_pct == null ? "" :
     (m.total_return_pct >= 0 ? "pos" : "neg");
@@ -1118,14 +1384,12 @@ function renderStrategyResult(r) {
     tile(T().m_trades, r.num_trades == null ? "–" : r.num_trades);
   $("frameBox").innerHTML = r.has_html_report
     ? strategyFrame(r.run_id) : `<div class="muted">${T().no_html}</div>`;
-  $("reportMd").innerHTML = mdToHtml(r.report_markdown || "");
 }
 
 /* ------------------------------------------------- factor rendering */
 let factorSel = null;
 function renderFactorResult(r) {
-  const yamlText = r.task_yaml || $("yamlEdit").value || "";
-  $("factorCode").textContent = yamlSection(yamlText, "factor") || "–";
+  renderFoldableLines($("factorCode"), codeForResult(r));
   const f = r.factor || {};
   const stats = f.stats || [];
   const t = T();
@@ -1159,7 +1423,6 @@ function renderFactorResult(r) {
     chips.appendChild(b);
   });
   drawFactorCharts(f);
-  $("factorReportMd").innerHTML = mdToHtml(r.report_markdown || "");
 }
 function drawFactorCharts(f) {
   const icBox = $("icWrap"), layerBox = $("layerWrap");
@@ -1262,42 +1525,6 @@ function lineChart(wrap, dates, series, opts = {}) {
   });
 }
 
-/* -------------------------------------------- tiny markdown renderer */
-function mdToHtml(md) {
-  const lines = esc(md).split("\n");
-  let html = "", inTable = false, inList = false;
-  const closeAll = () => {
-    if (inTable) { html += "</table>"; inTable = false; }
-    if (inList) { html += "</ul>"; inList = false; }
-  };
-  const inline = s => s.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
-                       .replace(/`(.+?)`/g, "<code>$1</code>");
-  for (const raw of lines) {
-    const line = raw.trimEnd();
-    if (/^\|/.test(line)) {
-      const cells = line.split("|").slice(1, -1).map(c => c.trim());
-      if (cells.every(c => /^-+$/.test(c))) continue;
-      if (!inTable) { html += "<table>"; inTable = true;
-        html += "<tr>" + cells.map(c => `<th>${inline(c)}</th>`).join("") + "</tr>";
-      } else {
-        html += "<tr>" + cells.map(c => `<td>${inline(c)}</td>`).join("") + "</tr>";
-      }
-      continue;
-    }
-    if (/^- /.test(line)) {
-      if (inTable) { html += "</table>"; inTable = false; }
-      if (!inList) { html += "<ul>"; inList = true; }
-      html += `<li>${inline(line.slice(2))}</li>`; continue;
-    }
-    closeAll();
-    if (/^## /.test(line)) html += `<h2>${inline(line.slice(3))}</h2>`;
-    else if (/^# /.test(line)) html += `<h1>${inline(line.slice(2))}</h1>`;
-    else if (line) html += `<p>${inline(line)}</p>`;
-  }
-  closeAll();
-  return html;
-}
-
 /* --------------------------------------------------------- history */
 async function loadHistory() {
   try { historyCache = await api("/api/runs?limit=30"); } catch (e) { return; }
@@ -1349,7 +1576,8 @@ async function openRun(runId, scroll) {
     num_trades: (d.summary || {}).num_trades,
     factor: d.factor || {},
     risk: d.risk || {},
-    report_markdown: d.report_markdown || "",
+    strategy_source: d.strategy_source || "",
+    factor_expressions: d.factor_expressions || [],
     has_html_report: d.has_html_report,
     validation: d.validation || null,
     task_yaml: d.task_yaml || ""
@@ -1447,6 +1675,102 @@ $("llmTestBtn").onclick = async () => {
       : `<span class="err">✗ ${esc(r.error || "failed")}</span>`;
   });
 };
+
+/* ------------------------------------------ foldable YAML DSL editor */
+// A single contenteditable region (not a plain <textarea>) so folding
+// stays interactive WHILE editing, like a real code editor -- a plain
+// textarea can't hide arbitrary lines at all. Each line is a child
+// <div class="foldrow"> holding a non-editable fold marker/hint plus an
+// editable <span class="linetext"> with the actual text; folding only
+// ever toggles a row's `display`, never removing it from the DOM, so the
+// full value (below) is always reconstructable regardless of fold state
+// -- and reading .value walks every row explicitly by design rather than
+// using something like `.innerText` (which skips display:none content
+// and would silently drop folded text from what gets submitted/run).
+// New content the user types (e.g. pressing Enter to add a line) becomes
+// a plain browser-created row with no fold marker of its own -- folding
+// is computed once when a task is freshly loaded, not live per keystroke,
+// since re-rendering the whole structure on every keystroke would reset
+// the cursor position.
+(function setupYamlFoldEditor() {
+  const el = $("yamlEdit");
+  let rows = [];
+
+  function render(text) {
+    el.innerHTML = "";
+    rows = [];
+    const lines = (text || "").split("\n");
+    const ranges = computeFoldRanges(lines);
+    // default-fold long blocks (e.g. a 24-symbol list) so a freshly
+    // loaded task doesn't dump pages of text before you've even looked.
+    const folded = new Set(
+      Object.keys(ranges).map(Number).filter(h => ranges[h] - h - 1 >= 6)
+    );
+    const hints = [];
+    function updateVisibility() {
+      const hidden = new Array(lines.length).fill(false);
+      folded.forEach(h => { for (let i = h + 1; i < ranges[h]; i++) hidden[i] = true; });
+      rows.forEach((row, i) => { row.style.display = hidden[i] ? "none" : ""; });
+      hints.forEach((hint, i) => { if (hint) hint.style.display = folded.has(i) ? "" : "none"; });
+    }
+    lines.forEach((line, i) => {
+      const row = document.createElement("div");
+      row.className = "foldrow";
+      const marker = document.createElement("span");
+      marker.className = "foldmarker";
+      marker.contentEditable = "false";
+      if (ranges[i] != null) {
+        marker.classList.add("can-fold");
+        marker.textContent = folded.has(i) ? "▸" : "▾";
+        marker.onclick = () => {
+          if (folded.has(i)) folded.delete(i); else folded.add(i);
+          marker.textContent = folded.has(i) ? "▸" : "▾";
+          updateVisibility();
+        };
+      }
+      const content = document.createElement("span");
+      content.className = "linetext";
+      content.textContent = line;
+      row.appendChild(marker);
+      row.appendChild(content);
+      if (ranges[i] != null) {
+        const hint = document.createElement("span");
+        hint.className = "foldhint";
+        hint.contentEditable = "false";
+        hint.style.display = folded.has(i) ? "" : "none";
+        hint.textContent = ` ⋯ ${ranges[i] - i - 1} lines`;
+        row.appendChild(hint);
+        hints[i] = hint;
+      } else {
+        hints[i] = null;
+      }
+      el.appendChild(row);
+      rows.push(row);
+    });
+    updateVisibility();
+  }
+
+  function getValue() {
+    return Array.from(el.children).map(row => {
+      const lt = row.querySelector(".linetext");
+      return lt ? lt.textContent : row.textContent;
+    }).join("\n");
+  }
+
+  // force plain-text paste -- rich/HTML paste into a contenteditable
+  // region would inject formatting that corrupts the YAML/Python text.
+  el.addEventListener("paste", e => {
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData("text/plain");
+    document.execCommand("insertText", false, text);
+  });
+
+  Object.defineProperty(el, "value", {
+    get: getValue,
+    set: v => render(v),
+  });
+  render("");
+})();
 
 /* ------------------------------------------------------------ boot */
 loadMarkets();

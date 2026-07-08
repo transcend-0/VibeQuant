@@ -81,11 +81,11 @@ def cmd_plan(args) -> None:
 
 
 def cmd_strategies(_args) -> None:
-    for name, tpl in sorted(REGISTRY.items()):
-        print(f"{name:>15}  {tpl.summary_en}")
-        print(f"{'':>15}  {tpl.summary_zh}")
-        if tpl.defaults:
-            print(f"{'':>15}  defaults: {tpl.defaults}")
+    for name, skeleton in sorted(REGISTRY.items()):
+        print(f"{name:>15}  {skeleton.summary_en}")
+        print(f"{'':>15}  {skeleton.summary_zh}")
+        if skeleton.params:
+            print(f"{'':>15}  companion params: {skeleton.params}")
         print()
 
 
@@ -170,7 +170,7 @@ def main(argv=None) -> None:
     p_plan.add_argument("task")
     p_plan.set_defaults(fn=cmd_plan)
 
-    p_str = sub.add_parser("strategies", help="list strategy templates")
+    p_str = sub.add_parser("strategies", help="list strategy starter skeletons")
     p_str.set_defaults(fn=cmd_strategies)
 
     p_runs = sub.add_parser("runs", help="list recent runs")

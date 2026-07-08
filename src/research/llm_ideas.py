@@ -20,6 +20,7 @@ from typing import List
 
 from ..adapters.akquant_factor import known_expression_functions
 from ..llm import LLMClient, LLMError, query_structured
+from ..strategy_source import StrategySourceError, validate_strategy_params
 from .ingest import Idea
 
 logger = logging.getLogger(__name__)
@@ -50,15 +51,32 @@ Reply with ONLY a JSON array (no markdown fence), each element:
  "title_en": "...", "title_zh": "...",
  "factor_expressions": ["Name = Expr", ...],   // for kind=factor, 1-2 items
  "strategy_name": "custom" or null,   // "custom" if kind=strategy, else null
- "strategy_source": "def signal(closes, position):\\n    ..." or null,
-   // required when strategy_name="custom": complete Python implementing
-   // the paper's rule. closes: chronological floats. position: currently
-   // held QUANTITY (0 if flat, not a weight). Return a target weight in
-   // [0,1] or None. Plain Python only (len/sum/min/max/range) -- no imports.
- "strategy_warmup": <int> or null,  // leading bars to skip, e.g. 20
+ "strategy_source": "class Strategy(BaseStrategy):\\n    def on_bar(self, bar):\\n        ..." or null,
+   // required when strategy_name="custom": complete Python implementing the
+   // paper's rule as an akquant Strategy subclass (Strategy/BaseStrategy is
+   // akquant's own base class, already in scope). Use self.get_position(symbol),
+   // self.get_portfolio_value() -> float (total equity; there is NO
+   // self.portfolio/.equity attribute), self.get_history(count, symbol,
+   // field="close") (already a plain numpy array -- do NOT call .values on it,
+   // that raises AttributeError; index/slice it directly), self.buy/sell(
+   // symbol=, quantity=), self.close_position(
+   // symbol=), self.order_target_percent(symbol=, target_percent=0..1, must
+   // be >= 0 -- short selling is disabled by default, matching real A-share
+   // retail constraints; implement long-short ideas long-only instead).
+   // Override on_bar(self, bar) for per-bar logic -- bar has .symbol/.open/
+   // .high/.low/.close/.volume and .timestamp_iso (str, ISO 8601, e.g.
+   // "2022-01-02T16:00:00Z" -- the easy way to get date/time; there is NO
+   // bar.date/.datetime/.time, don't guess one). No imports beyond numpy
+   // (np)/pandas (pd), already in scope.
  "evidence": ["short quote or concept from the text", ...]}}
-At most 5 ideas, ordered most to least promising. Only propose what the text
-actually supports; if it needs fundamental data, skip it."""
+Propose 1 to 3 ideas — no more. Every idea in the list must be clearly
+distinct from the others (different mechanism/signal, not a parameter
+tweak of another idea already in your list, e.g. don't propose both
+Mom20 and Mom25 momentum as separate ideas — pick the one the text
+actually supports). If the text really only supports one solid idea,
+return just one; do not pad the list with weaker variations to reach 3.
+Only propose what the text actually supports; if it needs fundamental
+data, skip it."""
 
 
 def _expression_valid(raw: str) -> bool:
@@ -83,7 +101,7 @@ def _parse_ideas(reply: str) -> List[Idea]:
         raise ValueError("reply JSON must be a list")
 
     ideas: List[Idea] = []
-    for rank, item in enumerate(items[:5]):
+    for rank, item in enumerate(items[:3]):
         if not isinstance(item, dict):
             continue
         kind = item.get("kind")
@@ -95,13 +113,14 @@ def _parse_ideas(reply: str) -> List[Idea]:
         strategy_params: dict = {}
         if item.get("strategy_name") == "custom":
             source = str(item.get("strategy_source") or "")
-            if "def signal(" in source:  # light sanity check; custom is unsandboxed
+            candidate_params = {"source": source}
+            try:
+                validate_strategy_params(candidate_params)  # unsandboxed; syntax/shape only
+            except StrategySourceError:
+                pass
+            else:
                 strategy = "custom"
-                warmup = item.get("strategy_warmup")
-                strategy_params = {
-                    "source": source,
-                    "warmup": int(warmup) if isinstance(warmup, (int, float)) else 0,
-                }
+                strategy_params = candidate_params
         if kind == "factor" and not exprs:
             continue  # every expression it proposed was invalid
         if kind == "strategy" and not strategy:

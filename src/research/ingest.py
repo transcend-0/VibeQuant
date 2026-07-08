@@ -165,7 +165,42 @@ def _arxiv_brief(arxiv_id: str, source: str, instruction: str = "") -> ResearchB
         raise IngestError(f"arXiv id {arxiv_id} not found")
     title = _clean((entry.findtext("a:title", "", ns) or "").replace("\n", " "))
     abstract = _clean(entry.findtext("a:summary", "", ns) or "")
-    paper_text = title + "\n" + abstract
+
+    # best-effort: get the actual paper body, not just the abstract --
+    # factor/strategy detail usually lives in the methodology section.
+    # HTML first (arXiv's own rendering; cleanest text, no page limit,
+    # not every paper has one -- newer submissions mostly do), then PDF
+    # (via the existing pdftotext pipeline), then abstract-only. Each
+    # stage is a soft degrade: a fetch/parse failure just falls through
+    # to the next one rather than failing the whole request, since
+    # abstract-only was already a usable brief before this existed.
+    body_text = ""
+    note = "analyzed title + abstract only (HTML and PDF fetch both failed)"
+    try:
+        raw_html = _fetch(f"https://arxiv.org/html/{arxiv_id}")
+        parser = _HTMLText()
+        parser.feed(raw_html.decode("utf-8", errors="replace"))
+        body_text = _clean("\n".join(parser.chunks))
+        if body_text:
+            note = "analyzed full HTML paper from arXiv"
+    except Exception:
+        body_text = ""
+
+    if not body_text:
+        try:
+            import tempfile
+
+            pdf_bytes = _fetch(f"https://arxiv.org/pdf/{arxiv_id}.pdf")
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
+                tmp.write(pdf_bytes)
+                tmp.flush()
+                body_text = _clean(_pdf_text(Path(tmp.name)))
+            if body_text:
+                note = "analyzed full PDF (first 30 pages) fetched from arXiv"
+        except Exception:
+            pass
+
+    paper_text = f"{title}\n\n{abstract}\n\n{body_text}".strip() if body_text else f"{title}\n{abstract}"
     text = f"User instruction: {instruction}\n\n{paper_text}" if instruction else paper_text
     brief = ResearchBrief(
         source_type="arxiv",
@@ -175,7 +210,7 @@ def _arxiv_brief(arxiv_id: str, source: str, instruction: str = "") -> ResearchB
         text=text,
         user_instruction=instruction,
     )
-    brief.notes.append(f"arXiv:{arxiv_id} — analyzed title + abstract")
+    brief.notes.append(f"arXiv:{arxiv_id} — {note}")
     if instruction:
         brief.notes.append(f"用户附加说明: {instruction}")
     return brief

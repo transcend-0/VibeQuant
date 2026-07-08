@@ -49,6 +49,16 @@ class RunResult:
             "artifacts": self.artifacts,
             "error": self.error,
             "failed_step": self.failed_step,
+            # the clean Python/expressions, not the YAML-escaped form
+            # (task_yaml's params.source often renders as a quoted,
+            # \n-escaped one-liner) -- for display in the UI's code panel.
+            "strategy_source": (
+                self.spec.strategy.params.get("source", "")
+                if self.kind == "strategy" else ""
+            ),
+            "factor_expressions": (
+                list(self.spec.factor.expressions) if self.kind == "factor" else []
+            ),
         }
 
 

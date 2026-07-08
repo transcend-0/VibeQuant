@@ -124,7 +124,18 @@ def build_markdown_report(
     lang = spec.report.language if spec.report.language in _L else "en"
     t = _L[lang]
     period = f"{spec.data.start or '...'} ~ {spec.data.end or '...'}"
-    params = ", ".join(f"{k}={v}" for k, v in sorted(spec.strategy.params.items()))
+    # params.source is the full multi-line Strategy class -- shown in full
+    # in the workbench/run artifacts, not crammed inline here; summarize it
+    # instead of dumping raw Python into one markdown bullet.
+    param_bits = []
+    for key, value in sorted(spec.strategy.params.items()):
+        if key == "source":
+            param_bits.append(f"source ({len(str(value).splitlines())} lines)")
+        elif key == "expressions":
+            param_bits.append(f"expressions ({len(value)})")
+        else:
+            param_bits.append(f"{key}={value}")
+    params = ", ".join(param_bits)
     strategy_line = spec.strategy.name + (f" ({params})" if params else "")
 
     lines = [

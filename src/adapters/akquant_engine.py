@@ -1,27 +1,35 @@
 """Thin adapter over akquant.
 
 This is the ONLY module in VibeQuant that imports akquant. Everything
-above it speaks in TaskSpec / signal functions / plain dataclasses, so
-akquant stays untouched and swappable.
+above it speaks in TaskSpec / plain dataclasses, so akquant stays
+untouched and swappable.
 
-The adapter:
-  1. wraps a pure-Python signal function into a generic akquant Strategy,
-  2. calls akquant.run_backtest with cost/risk settings from the DSL,
-  3. flattens the result into an engine-agnostic BacktestOutput.
+Execution contract: `spec.strategy.params["source"]` is Python source
+defining a class that inherits `Strategy` (an alias for `aq.Strategy`
+injected into the exec namespace, alongside `BaseStrategy`, `np`, `pd`,
+`SYMBOLS`/`START`/`END`, and -- when `spec.strategy.params["expressions"]`
+is set -- a precomputed `FACTOR_SCORES` map). The adapter execs that
+source, hands the resulting class straight to `aq.run_backtest`, and
+flattens the result into an engine-agnostic BacktestOutput. There is no
+per-symbol callback layer any more: a single-symbol rule and a
+cross-sectional rotation both just look like an ordinary akquant Strategy
+subclass, with the freedom that implies (and the same accepted,
+unsandboxed-exec risk as `src/strategies/custom.py` documents).
 """
 
 from __future__ import annotations
 
+import ast
 import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 
 import akquant as aq
 
 from ..dsl import TaskSpec
-from ..strategies import SignalFn, build_signal, warmup_bars
 
 
 @dataclass
@@ -47,98 +55,43 @@ class BacktestOutput:
         }
 
 
-class _SignalStrategy(aq.Strategy):
-    """Generic bridge: rolling closes -> signal fn -> target-percent orders."""
+class _DateKeyedScores(dict):
+    """FACTOR_SCORES, tolerant of how the strategy code looks a date up.
 
-    def __init__(
-        self,
-        signal_fn: SignalFn = None,  # type: ignore[assignment]
-        max_position_pct: float = 0.95,
-        history_cap: int = 512,
-    ) -> None:
-        super().__init__()
-        self._signal_fn = signal_fn
-        self._max_position_pct = max_position_pct
-        self._history_cap = history_cap
-        self._closes: Dict[str, List[float]] = {}
-
-    def on_bar(self, bar: Any) -> None:  # noqa: D102
-        symbol = bar.symbol
-        closes = self._closes.setdefault(symbol, [])
-        closes.append(float(bar.close))
-        if len(closes) > self._history_cap:
-            del closes[: len(closes) - self._history_cap]
-
-        position = float(self.get_position(symbol))
-        target = self._signal_fn(closes, position)
-        if target is None:
-            return
-        target = max(0.0, min(float(target), 1.0)) * self._max_position_pct
-        if target == 0.0 and position <= 0:
-            return
-        self.order_target_percent(target_percent=target, symbol=symbol)
-
-
-class _RotationStrategy(aq.Strategy):
-    """Cross-sectional rotation: hold the top-K symbols by factor score.
-
-    Scores are precomputed from the same bars the engine replays (factor
-    value at date t uses data up to t's close; orders fill at the next
-    open, so there is no lookahead). Rebalances every `rebalance_days`
-    trading days.
+    Keys are stored as "YYYY-MM-DD" strings, but `on_daily_rebalance`'s
+    `trading_date` argument is a `datetime.date` (and LLM-authored code
+    understandably sometimes looks it up directly, or via a pandas
+    Timestamp, instead of converting with `str(trading_date)[:10]` first
+    as the docs ask). A plain dict silently returns the default ({}) on a
+    type-mismatched key -- no exception, just an empty score dict every
+    single day, so the strategy quietly never rebalances and returns 0%
+    with 0 trades. Normalizing the lookup key here turns that into a
+    reliable match regardless of what the caller passes.
     """
 
-    def __init__(
-        self,
-        scores: Dict[str, Dict[str, float]] = None,  # date -> {symbol: score}
-        top_k: int = 5,
-        rebalance_days: int = 5,
-        max_position_pct: float = 0.95,
-    ) -> None:
-        super().__init__()
-        self._scores = scores or {}
-        self._top_k = max(1, int(top_k))
-        self._rebalance_days = max(1, int(rebalance_days))
-        self._max_position_pct = max_position_pct
-        self._day_count = -1
-        self._pending_target: Optional[Dict[str, float]] = None
-        self._held: set = set()
+    @staticmethod
+    def _norm(key: Any) -> str:
+        return str(key)[:10]
 
-    def on_daily_rebalance(self, trading_date, timestamp) -> None:  # noqa: D102
-        # phase 2: entries queued at the previous session — exit proceeds
-        # have settled by now, so buys cannot be rejected for cash
-        if self._pending_target is not None:
-            self.order_target_weights(
-                target_weights=self._pending_target,
-                liquidate_unmentioned=False,
-                rebalance_tolerance=0.01,
-            )
-            self._held = set(self._pending_target)
-            self._pending_target = None
+    def get(self, key: Any, default=None) -> Any:  # noqa: D102
+        return super().get(self._norm(key), default)
 
-        self._day_count += 1
-        if self._day_count % self._rebalance_days:
-            return
-        key = str(trading_date)[:10]
-        day_scores = self._scores.get(key) or {}
-        if len(day_scores) < self._top_k:
-            return  # warmup: not enough valid scores yet
-        ranked = sorted(day_scores, key=day_scores.get, reverse=True)
-        weight = self._max_position_pct / self._top_k
-        target = {s: weight for s in ranked[: self._top_k]}
+    def __getitem__(self, key: Any) -> Any:
+        return super().__getitem__(self._norm(key))
 
-        # phase 1: exit names leaving the portfolio today; enter tomorrow
-        # (two-phase rebalance, as live rotation desks do)
-        for symbol in self._held - set(target):
-            if float(self.get_position(symbol)) > 0:
-                self.close_position(symbol)
-        self._pending_target = target
+    def __contains__(self, key: Any) -> bool:  # noqa: D105
+        return super().__contains__(self._norm(key))
 
 
 def _rotation_scores(
     expressions: List[str], data: Dict[str, pd.DataFrame]
 ) -> Dict[str, Dict[str, float]]:
-    """Precompute per-date combined factor scores (z-scored mean)."""
+    """Precompute per-date combined factor scores (z-scored mean).
+
+    Bridges validated WorldQuant-style factor expressions (same grammar as
+    factor research) into a strategy: the score at date t only uses data
+    up to t's close, so a strategy reading FACTOR_SCORES has no lookahead.
+    """
     from . import akquant_factor
 
     panel = akquant_factor.compute_factors(expressions, data)
@@ -152,7 +105,7 @@ def _rotation_scores(
         panel[name] = (panel[name] - grouped.transform("mean")) / std
     panel["_score"] = panel[names].mean(axis=1)
 
-    scores: Dict[str, Dict[str, float]] = {}
+    scores: Dict[str, Dict[str, float]] = _DateKeyedScores()
     for (date, symbol), value in panel.set_index(["date", "symbol"])["_score"].items():
         if pd.isna(value):
             continue
@@ -160,11 +113,81 @@ def _rotation_scores(
     return scores
 
 
-ROTATION_DEFAULTS = {
-    "expressions": ["Mom20 = Delta(Close, 20) / Delay(Close, 20)"],
-    "top_k": 5,
-    "rebalance_days": 5,
-}
+def load_user_strategy(
+    source: str,
+    *,
+    symbols: List[str],
+    start: Optional[str],
+    end: Optional[str],
+    factor_scores: Optional[Dict[str, Dict[str, float]]] = None,
+):
+    """Exec `source` and return the akquant Strategy subclass it defines.
+
+    `source` must define a class inheriting `Strategy`/`BaseStrategy`
+    (both aliases for `aq.Strategy` in the exec namespace). If more than
+    one such class is defined, the last one *in source order* wins (helper
+    base classes defined earlier in the same source don't get picked over
+    the final concrete strategy) -- source order, not namespace dict
+    iteration order, because rebinding a name that already exists in the
+    namespace (e.g. a class literally named `Strategy`) keeps its original
+    dict position instead of moving to the end.
+    """
+    namespace: Dict[str, Any] = {
+        "aq": aq,
+        "akquant": aq,
+        "Strategy": aq.Strategy,
+        "BaseStrategy": aq.Strategy,
+        "np": np,
+        "pd": pd,
+        "SYMBOLS": list(symbols),
+        "START": start,
+        "END": end,
+        "FACTOR_SCORES": factor_scores if factor_scores is not None else _DateKeyedScores(),
+    }
+    compiled = compile(source, "<strategy_source>", "exec")
+    exec(compiled, namespace)  # noqa: S102 -- intentionally unsandboxed, see strategies/custom.py
+
+    candidates = {
+        k: v for k, v in namespace.items()
+        if isinstance(v, type) and issubclass(v, aq.Strategy) and v is not aq.Strategy
+    }
+    if not candidates:
+        raise ValueError(
+            "strategy source must define a class inheriting from Strategy "
+            "(e.g. 'class Strategy(BaseStrategy): def on_bar(self, bar): ...')"
+        )
+    order = [
+        node.name for node in ast.parse(source).body
+        if isinstance(node, ast.ClassDef) and node.name in candidates
+    ]
+    strategy_cls = candidates[order[-1]] if order else next(iter(candidates.values()))
+
+    # self.symbols/.start/.end as a convenience: LLM-authored code
+    # naturally reaches for `self.symbols` (mirroring akquant's own
+    # examples, where it's an explicit constructor arg) even though the
+    # documented mechanism is the SYMBOLS/START/END globals -- rather than
+    # relying on prompt wording alone, guarantee the attributes exist
+    # before the class's own __init__ runs, so it works either way.
+    # Anything the user's own __init__ sets afterward simply overrides
+    # this default, same as if they'd set it themselves.
+    #
+    # Signature must stay a bare `(self)`, matching the documented no-arg
+    # __init__ contract: akquant inspects the constructor signature and,
+    # if it sees `**kwargs`, forwards its OWN context kwargs (e.g.
+    # `symbols=`) straight through unfiltered -- which then blows up
+    # against the user's original no-arg `__init__`. A plain `(self)`
+    # keeps akquant's kwarg-filtering as "nothing accepted", exactly like
+    # an unwrapped no-arg __init__.
+    orig_init = strategy_cls.__init__
+
+    def _init_with_defaults(self):
+        self.symbols = list(symbols)
+        self.start = start
+        self.end = end
+        orig_init(self)
+
+    strategy_cls.__init__ = _init_with_defaults
+    return strategy_cls
 
 
 def _metric(metrics: Any, name: str) -> Optional[float]:
@@ -183,29 +206,24 @@ def _metric(metrics: Any, name: str) -> Optional[float]:
 def run_backtest(spec: TaskSpec, data: Dict[str, pd.DataFrame]) -> BacktestOutput:
     """Run one backtest for a TaskSpec over pre-loaded per-symbol bars."""
     symbols = list(data.keys())
+    params = spec.strategy.params or {}
 
-    if spec.strategy.name == "factor_rotation":
-        params = {**ROTATION_DEFAULTS, **spec.strategy.params}
-        strategy: Any = _RotationStrategy(
-            scores=_rotation_scores(
-                [str(e) for e in params["expressions"]], data
-            ),
-            top_k=int(params["top_k"]),
-            rebalance_days=int(params["rebalance_days"]),
-            max_position_pct=spec.risk.max_position_pct,
-        )
-    else:
-        signal_fn = build_signal(spec.strategy.name, spec.strategy.params)
-        warmup = warmup_bars(spec.strategy.name, spec.strategy.params)
-        strategy = _SignalStrategy(
-            signal_fn=signal_fn,
-            max_position_pct=spec.risk.max_position_pct / max(len(symbols), 1),
-            history_cap=max(warmup + 64, 256),
-        )
+    factor_scores = None
+    expressions = params.get("expressions")
+    if expressions:
+        factor_scores = _rotation_scores([str(e) for e in expressions], data)
+
+    strategy_cls = load_user_strategy(
+        str(params.get("source") or "class Strategy(BaseStrategy):\n    pass\n"),
+        symbols=symbols,
+        start=spec.data.start,
+        end=spec.data.end,
+        factor_scores=factor_scores,
+    )
 
     kwargs: Dict[str, Any] = dict(
         data=data if len(symbols) > 1 else next(iter(data.values())),
-        strategy=strategy,
+        strategy=strategy_cls,
         symbols=symbols if len(symbols) > 1 else symbols[0],
         initial_cash=spec.execution.initial_cash,
         commission_rate=spec.execution.commission_rate,
@@ -215,6 +233,7 @@ def run_backtest(spec: TaskSpec, data: Dict[str, pd.DataFrame]) -> BacktestOutpu
             "value": spec.execution.slippage_bps / 10_000.0,
         },
         t_plus_one=spec.execution.t_plus_one,
+        history_depth=int(params.get("history_depth", 300)),
         show_progress=False,
     )
     if spec.risk.max_order_value:

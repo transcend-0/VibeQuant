@@ -8,21 +8,24 @@ data:
   symbols: [510300]
   start: "2022-01-01"
 strategy:
-  name: custom
+  name: ma_cross
   params:
-    warmup: 21
     source: |
-      def signal(closes, position):
-          if len(closes) < 21:
-              return None
-          fast = sum(closes[-5:]) / 5
-          slow = sum(closes[-20:]) / 20
-          fast_prev = sum(closes[-6:-1]) / 5
-          slow_prev = sum(closes[-21:-1]) / 20
-          if fast_prev <= slow_prev and fast > slow:
-              return 1.0  # golden cross -> long
-          if fast_prev >= slow_prev and fast < slow:
-              return 0.0  # death cross -> flat
-          return None
+      class Strategy(BaseStrategy):
+          fast, slow = 5, 20
+
+          def on_bar(self, bar):
+              closes = self.get_history(count=self.slow + 1, symbol=bar.symbol, field="close")
+              if len(closes) < self.slow + 1:
+                  return
+              fast_now = closes[-self.fast:].mean()
+              slow_now = closes[-self.slow:].mean()
+              fast_prev = closes[-self.fast - 1:-1].mean()
+              slow_prev = closes[-self.slow - 1:-1].mean()
+              position = self.get_position(bar.symbol)
+              if fast_prev <= slow_prev and fast_now > slow_now and position <= 0:
+                  self.order_target_percent(target_percent=0.95, symbol=bar.symbol)
+              elif fast_prev >= slow_prev and fast_now < slow_now and position > 0:
+                  self.close_position(bar.symbol)
 report:
   language: zh
