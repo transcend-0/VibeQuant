@@ -20,6 +20,7 @@ import datetime as _dt
 import json
 import re
 import secrets
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -114,6 +115,46 @@ class MemoryStore:
                 except json.JSONDecodeError:
                     continue
         return list(reversed(entries))[:limit]
+
+    def rename_run(self, run_id: str, new_name: str) -> bool:
+        """Update the display name (task_name) of a logged run in-place."""
+        if not self.log_file.exists():
+            return False
+        lines = self.log_file.read_text(encoding="utf-8").splitlines()
+        found = False
+        rewritten: List[str] = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            entry = json.loads(line)
+            if entry.get("run_id") == run_id:
+                entry["task_name"] = new_name
+                found = True
+            rewritten.append(json.dumps(entry, ensure_ascii=False, default=str))
+        if found:
+            self.log_file.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+        return found
+
+    def delete_run(self, run_id: str) -> bool:
+        """Remove a run's artifact directory and its experiment-log entry."""
+        directory = self.runs_dir / run_id
+        existed = directory.exists()
+        if existed:
+            shutil.rmtree(directory)
+        if self.log_file.exists():
+            lines = self.log_file.read_text(encoding="utf-8").splitlines()
+            kept = [
+                line
+                for line in lines
+                if line.strip() and json.loads(line).get("run_id") != run_id
+            ]
+            if len(kept) != len([l for l in lines if l.strip()]):
+                existed = True
+                self.log_file.write_text(
+                    ("\n".join(kept) + "\n") if kept else "", encoding="utf-8"
+                )
+        return existed
 
     def load_run(self, run_id: str) -> Optional[Dict[str, Any]]:
         directory = self.runs_dir / run_id

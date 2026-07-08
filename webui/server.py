@@ -4,6 +4,7 @@ Endpoints (grouped):
     UI          GET /
     research    POST /api/parse · /api/ingest · /api/ingest_pdf · /api/run
     runs        GET /api/runs · /api/runs/{id} · /api/runs/{id}/artifact/{name}
+                PATCH /api/runs/{id} · DELETE /api/runs/{id}
     library     GET /api/data · /api/data/{symbol} · /api/factors
     reference   GET /api/strategies · /api/factor_presets · /api/universes
     llm         GET/POST /api/llm/config · POST /api/llm/test
@@ -482,6 +483,33 @@ def run_detail(run_id: str) -> Dict[str, Any]:
         detail.setdefault("strategy_source", "")
         detail.setdefault("factor_expressions", [])
     return detail
+
+
+class RenameRunRequest(BaseModel):
+    name: str
+
+
+@app.patch("/api/runs/{run_id}")
+def run_rename(run_id: str, req: RenameRunRequest) -> Dict[str, Any]:
+    new_name = req.name.strip()
+    if not new_name:
+        raise HTTPException(status_code=422, detail="name must not be empty")
+    store = MemoryStore(workspace_dir())
+    if not store.rename_run(run_id, new_name):
+        raise HTTPException(status_code=404, detail="run not found")
+    return {"run_id": run_id, "task_name": new_name}
+
+
+@app.delete("/api/runs/{run_id}")
+def run_delete(run_id: str) -> Dict[str, Any]:
+    store = MemoryStore(workspace_dir())
+    # resolve() + prefix check guards against path tricks in run_id
+    path = (store.runs_dir / run_id).resolve()
+    if not str(path).startswith(str(store.runs_dir.resolve())):
+        raise HTTPException(status_code=404, detail="run not found")
+    if not store.delete_run(run_id):
+        raise HTTPException(status_code=404, detail="run not found")
+    return {"deleted": run_id}
 
 
 @app.get("/api/runs/{run_id}/artifact/{name}")

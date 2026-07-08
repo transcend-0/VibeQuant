@@ -437,7 +437,9 @@ const I18N = {
     m_ret: "Total return", m_ann: "Annualized", m_sharpe: "Sharpe",
     m_mdd: "Max drawdown", m_win: "Win rate", m_trades: "Trades",
     col_time: "time", col_run: "run",
-    col_sharpe: "Sharpe", col_ic: "IC",
+    col_sharpe: "Sharpe", col_ic: "IC", col_actions: "",
+    act_delete: "delete", dblclick_rename_hint: "double-click to rename",
+    confirm_delete_run: "Delete this run? This cannot be undone.",
     code_strategy: "Strategy code", code_factor: "Factor code",
     v_low: "overfit risk: low", v_medium: "overfit risk: medium",
     v_high: "overfit risk: high",
@@ -526,7 +528,9 @@ const I18N = {
     m_ret: "总收益", m_ann: "年化收益", m_sharpe: "夏普",
     m_mdd: "最大回撤", m_win: "胜率", m_trades: "交易次数",
     col_time: "时间", col_run: "运行",
-    col_sharpe: "夏普", col_ic: "IC",
+    col_sharpe: "夏普", col_ic: "IC", col_actions: "",
+    act_delete: "删除", dblclick_rename_hint: "双击可重命名",
+    confirm_delete_run: "确定删除这次运行？此操作不可撤销。",
     code_strategy: "策略代码", code_factor: "因子代码",
     v_low: "过拟合风险：低", v_medium: "过拟合风险：中", v_high: "过拟合风险：高",
     v_perm: "置换p", v_trials: "尝试次数", v_sig: "折减后显著",
@@ -1655,18 +1659,71 @@ function renderHistory() {
     }
     return `<tr class="clickable" data-run="${esc(e.run_id)}">
       <td>${esc((e.logged_at || "").slice(5, 16))}</td>
-      <td style="text-align:left">${esc(e.task_name || e.run_id)}</td>
+      <td class="run-name" style="text-align:left;cursor:text" data-run="${esc(e.run_id)}"
+        title="${T().dblclick_rename_hint}">${esc(e.task_name || e.run_id)}</td>
       <td style="text-align:left">${esc(marketLabel(e.data_source))}</td>
       <td style="text-align:left">${esc(e.universe || "–")}</td>
-      <td>${perf}</td></tr>`;
+      <td>${perf}</td>
+      <td style="text-align:right">
+        <button class="danger" data-act="delete" data-run="${esc(e.run_id)}"
+          title="${T().act_delete}"
+          style="padding:0 6px;font-size:14px;line-height:20px">&times;</button>
+      </td></tr>`;
   }).join("");
   box.innerHTML = `<div style="overflow-x:auto"><table class="list"><tr>
     <th>${T().col_time}</th><th>${T().col_run}</th><th>${T().col_market}</th>
-    <th>${T().col_universe}</th><th>${isStrategy ? T().col_sharpe : T().col_ic}</th></tr>
+    <th>${T().col_universe}</th><th>${isStrategy ? T().col_sharpe : T().col_ic}</th>
+    <th>${T().col_actions}</th></tr>
     ${rows}</table></div>`;
   box.querySelectorAll("tr.clickable").forEach(tr => {
     tr.onclick = () => openRun(tr.dataset.run, true);
   });
+  box.querySelectorAll("td.run-name").forEach(td => {
+    td.onclick = (ev) => ev.stopPropagation();
+    td.ondblclick = (ev) => {
+      ev.stopPropagation();
+      startRenameRun(td, td.dataset.run);
+    };
+  });
+  box.querySelectorAll("button[data-act='delete']").forEach(b => {
+    b.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!confirm(T().confirm_delete_run)) return;
+      try {
+        await api(`/api/runs/${encodeURIComponent(b.dataset.run)}`, { method: "DELETE" });
+        await loadHistory();
+      } catch (e) { alert(e.message); }
+    };
+  });
+}
+function startRenameRun(td, runId) {
+  const current = ((historyCache.find(e => e.run_id === runId) || {}).task_name) || runId;
+  td.innerHTML = `<input type="text" value="${esc(current)}"
+    style="width:100%;font:inherit;padding:1px 4px;box-sizing:border-box" />`;
+  const input = td.querySelector("input");
+  input.onclick = (ev) => ev.stopPropagation();
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = async () => {
+    if (done) return;
+    done = true;
+    const name = input.value.trim();
+    if (name && name !== current) {
+      try {
+        await api(`/api/runs/${encodeURIComponent(runId)}`, {
+          method: "PATCH", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ name })
+        });
+      } catch (e) { alert(e.message); }
+    }
+    await loadHistory();
+  };
+  input.onblur = commit;
+  input.onkeydown = (ev) => {
+    if (ev.key === "Enter") { input.blur(); }
+    else if (ev.key === "Escape") { done = true; renderHistory(); }
+  };
 }
 async function openRun(runId, scroll) {
   const d = await api("/api/runs/" + encodeURIComponent(runId));
