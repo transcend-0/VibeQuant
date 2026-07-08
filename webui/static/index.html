@@ -49,10 +49,12 @@ main { padding: 18px 22px; max-width: 1560px; margin: 0 auto; }
   border-radius: 12px; padding: 16px 18px; margin-bottom: 18px; }
 .card h2 { font-size: 13.5px; margin: 0 0 10px; color: var(--text-secondary);
   text-transform: uppercase; letter-spacing: .6px; }
-textarea, input, select {
+textarea, input:not([type=checkbox]):not([type=radio]), select {
   width: 100%; font: inherit; color: var(--text-primary);
   background: var(--surface-0); border: 1px solid var(--border);
   border-radius: 8px; padding: 8px 10px; }
+input[type=checkbox], input[type=radio] {
+  width: 16px; height: 16px; flex: none; accent-color: var(--accent); }
 textarea { resize: vertical; }
 textarea.code { font-family: var(--mono); font-size: 13px; white-space: pre; }
 #sourceInput { min-height: 64px; }
@@ -198,6 +200,15 @@ details > summary { cursor: pointer; }
     <div id="stratExprBox" style="margin-top:10px; display:none">
       <label class="small" data-i18n="s_expressions"></label>
       <textarea id="stratExprs" class="mono" style="min-height:60px">Mom20 = Delta(Close, 20) / Delay(Close, 20)</textarea>
+      <details id="factorLibDetails" style="margin:6px 0">
+        <summary class="muted" data-i18n="lib_pick"></summary>
+        <div class="muted" style="margin:6px 0" data-i18n="lib_hint"></div>
+        <div class="chips" id="factorLibSortChips" style="margin:6px 0"></div>
+        <div id="factorLibList" style="max-height:280px; overflow-y:auto"></div>
+        <div class="row">
+          <button id="factorLibInsertBtn" data-i18n="lib_insert"></button>
+        </div>
+      </details>
     </div>
     <div style="margin-top:10px">
       <label class="small" data-i18n="s_code"></label>
@@ -468,6 +479,9 @@ const I18N = {
     s_code: "Strategy code — an editable akquant Strategy class (see akquant's own Strategy API: on_bar, get_position, buy/sell, order_target_percent/weights, get_history)",
     s_history_depth: "History depth (bars kept for get_history)",
     s_expressions: "Factor expressions (feed FACTOR_SCORES into the code below)",
+    lib_pick: "Pick from factor library", lib_insert: "Insert selected",
+    lib_hint: "Reuses the saved expression only — scores are recomputed over this strategy's own symbols and date range, not the frozen historical values.",
+    lib_empty: "No saved factors yet — run one in Factor Research first.",
     tpl_rule: "Rule-based", tpl_factor: "Multi-factor rotation",
     tpl_ml: "Machine learning", tpl_custom: "Custom free-form",
     f_maxpos: "max_position (×ADV20)", f_maxtrade: "max_trade (×ADV20)",
@@ -553,6 +567,9 @@ const I18N = {
     s_code: "策略代码——可编辑的 akquant Strategy 类（akquant 原生 API：on_bar、get_position、buy/sell、order_target_percent/weights、get_history）",
     s_history_depth: "历史窗口（get_history 可取的历史条数）",
     s_expressions: "因子表达式（注入下方代码可用的 FACTOR_SCORES）",
+    lib_pick: "从因子库选择已有因子", lib_insert: "插入所选",
+    lib_hint: "只复用保存的表达式——得分会基于当前策略自己的标的池和时间区间重新计算，不是因子研究里那份已经算好的历史数值。",
+    lib_empty: "暂无已保存因子，请先在「因子研究」中跑一个。",
     tpl_rule: "规则策略", tpl_factor: "多因子轮动",
     tpl_ml: "机器学习", tpl_custom: "自定义",
     f_maxpos: "max_position（×ADV20 成交额）", f_maxtrade: "max_trade（×ADV20 成交额）",
@@ -686,7 +703,7 @@ function renderExamples() {
 }
 
 /* ------------------------------------------------------- universes */
-let marketsCache = [], strategiesCache = [];
+let marketsCache = [], strategiesCache = [], factorsCache = null;
 
 // Every strategy runs the same way: params.source defines a class
 // inheriting Strategy/BaseStrategy (akquant's own Strategy, injected into
@@ -870,6 +887,87 @@ function syncStratTemplate() {
     $("stratExprs").value = exprs.join("\n");
   }
 }
+
+/* factor library picker -- reuse an expression saved by a Factor Research
+   run (src/factors/registry.py). Only the expression is reused; the score
+   is still recomputed over this strategy's own symbols/date range, so
+   results stay honest even if the original study used a different universe. */
+let factorLibSort = { key: null, dir: "desc" };
+async function loadFactorLibrary() {
+  // re-fetch every time the picker opens rather than caching indefinitely --
+  // switching over from Factor Research after saving a new factor is the
+  // common path, and the registry read is cheap.
+  try { factorsCache = await api("/api/factors"); } catch (e) { factorsCache = []; }
+  renderFactorLibSortChips();
+  renderFactorLib();
+}
+function renderFactorLibSortChips() {
+  const box = $("factorLibSortChips");
+  box.innerHTML = "";
+  [["ic_mean", "IC"], ["icir", "ICIR"]].forEach(([key, label]) => {
+    const active = factorLibSort.key === key;
+    const b = document.createElement("button");
+    b.textContent = label + (active ? (factorLibSort.dir === "desc" ? " ↓" : " ↑") : "");
+    b.className = active ? "sel" : "";
+    b.onclick = () => {
+      factorLibSort = active
+        ? { key, dir: factorLibSort.dir === "desc" ? "asc" : "desc" }
+        : { key, dir: "desc" };
+      renderFactorLibSortChips();
+      renderFactorLib();
+    };
+    box.appendChild(b);
+  });
+}
+function renderFactorLib() {
+  const box = $("factorLibList");
+  if (!factorsCache || !factorsCache.length) {
+    box.innerHTML = `<div class="muted">${T().lib_empty}</div>`;
+    return;
+  }
+  const order = factorsCache.map((f, i) => [f, i]);
+  if (factorLibSort.key) {
+    const key = factorLibSort.key, dir = factorLibSort.dir === "asc" ? 1 : -1;
+    order.sort((a, b) => {
+      const av = (a[0].stats || {})[key], bv = (b[0].stats || {})[key];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return (av - bv) * dir;
+    });
+  }
+  box.innerHTML = order.map(([f, i]) => {
+    const stats = f.stats || {};
+    const ic = stats.ic_mean != null ? stats.ic_mean : "–";
+    const icir = stats.icir != null ? stats.icir : "–";
+    const range = [f.start, f.end].filter(Boolean).join(" ~ ");
+    const universe = f.source ? `${f.source} · ${(f.symbols || []).length} syms` : "";
+    return `<label class="suggestion" style="display:flex; gap:8px; align-items:flex-start; cursor:pointer">
+      <input type="checkbox" data-idx="${i}" style="margin-top:4px">
+      <div style="flex:1">
+        <div class="t">${esc(f.name)} <span class="badge">IC ${esc(ic)}</span><span class="badge">ICIR ${esc(icir)}</span></div>
+        <div class="m mono">${esc(f.expression)}</div>
+        <div class="m">${esc(universe)}${universe && range ? " · " : ""}${esc(range)}</div>
+      </div>
+    </label>`;
+  }).join("");
+}
+$("factorLibDetails").addEventListener("toggle", () => {
+  if ($("factorLibDetails").open) loadFactorLibrary();
+});
+$("factorLibInsertBtn").onclick = () => {
+  const picked = Array.from($("factorLibList").querySelectorAll("input[type=checkbox]:checked"))
+    .map(cb => factorsCache[parseInt(cb.dataset.idx)]);
+  if (!picked.length) return;
+  const lines = $("stratExprs").value.split("\n").map(s => s.trim()).filter(Boolean);
+  picked.forEach(f => {
+    const line = `${f.name} = ${f.expression}`;
+    const existing = lines.findIndex(l => l.split("=")[0].trim() === f.name);
+    if (existing >= 0) lines[existing] = line; else lines.push(line);
+  });
+  $("stratExprs").value = lines.join("\n");
+  $("factorLibList").querySelectorAll("input[type=checkbox]").forEach(cb => cb.checked = false);
+};
 
 /* strategy workbench -> YAML */
 // params values are numbers, arrays of expression strings (factor_rotation),
@@ -1167,7 +1265,9 @@ $("autoBtn").onclick = async () => {
         `(${esc(out.objective_name)}: ${baseObj} → ${newObj})<br>` +
         `${esc(h.explanation || "")}<br>${t.auto_best}</div>`;
       $("refineOut").innerHTML = html;
-      showTask(h.yaml, null, [], h.task);
+      // auto-optimize already ran the new backtest and the result renders
+      // in place below -- no need to jump the page to the plan card.
+      showTask(h.yaml, null, [], h.task, false);
       if (h.ok) {
         await loadHistory();
         await openRun(h.run_id, false);
