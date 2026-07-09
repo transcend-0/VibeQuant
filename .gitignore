@@ -9,3 +9,4 @@ config/llm.yaml
 config/email.yaml
 data/raw/
 data/factors/
+data/constituents/rule*
