@@ -40,15 +40,44 @@ def make_plan(spec: TaskSpec) -> Plan:
             title_en="Pre-run safety gate (mode, limits, sanity checks)",
             title_zh="运行前安全闸（模式、限额、健全性检查）",
         ),
-        PlanStep(
-            tool="load_data",
-            title_en=(
-                f"Load {spec.data.source} bars for "
-                f"{', '.join(spec.data.symbols)}"
-            ),
-            title_zh=f"加载 {spec.data.source} 行情：{', '.join(spec.data.symbols)}",
-        ),
     ]
+    if spec.data.universe_rule:
+        filters = spec.data.universe_rule.get("filters") or []
+        ftypes = ", ".join(str(f.get("type", "?")) for f in filters)
+        freq = (spec.data.universe_rule.get("rebalance") or {}).get("freq", "daily")
+        head.append(
+            PlanStep(
+                tool="build_universe",
+                title_en=(
+                    f"Build rule-based universe ({freq} rebalance; filters: "
+                    f"{ftypes}) — first build fetches per-symbol history and "
+                    "can take minutes; repeats hit the local cache"
+                ),
+                title_zh=(
+                    f"构建规则化 Universe（{freq} 调仓；过滤器：{ftypes}）"
+                    "——首次构建需逐标的抓取历史行情，可能耗时数分钟；"
+                    "同一规则再次运行命中本地缓存"
+                ),
+            )
+        )
+        head.append(
+            PlanStep(
+                tool="load_data",
+                title_en=f"Load {spec.data.source} bars for the built universe members",
+                title_zh=f"加载 {spec.data.source} 行情（标的由上一步构建的 Universe 决定）",
+            )
+        )
+    else:
+        head.append(
+            PlanStep(
+                tool="load_data",
+                title_en=(
+                    f"Load {spec.data.source} bars for "
+                    f"{', '.join(spec.data.symbols)}"
+                ),
+                title_zh=f"加载 {spec.data.source} 行情：{', '.join(spec.data.symbols)}",
+            )
+        )
     tail = [
         PlanStep(
             tool="memorize",

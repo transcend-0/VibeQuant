@@ -103,6 +103,8 @@ def auto_optimize(
     result_summary: Optional[Dict[str, Any]] = None,
     language: str = "en",
     workspace=None,
+    on_step=None,  # forwarded to run_task for step-level progress display
+    should_stop=None,  # forwarded to run_task for cooperative cancellation
 ) -> Dict[str, Any]:
     """Reflect on `result_summary` (the caller's current result), propose
     and run ONE revision. Returns {"history": [entry], "best": entry} for
@@ -137,7 +139,7 @@ def auto_optimize(
 
     spec = TaskSpec.from_yaml(pinned)
     spec.name = f"{reference.name}-auto"[:48]
-    result = run_task(spec, workspace=workspace)
+    result = run_task(spec, workspace=workspace, on_step=on_step, should_stop=should_stop)
     score = _objective(result) if result.ok else None
     entry = {
         "round": 1,

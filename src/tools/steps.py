@@ -22,6 +22,45 @@ def risk_gate(ctx: RunContext) -> None:
     ctx.gate_notes = pre_run_gate(ctx.spec)
 
 
+@register("build_universe")
+def build_universe(ctx: RunContext) -> None:
+    """Resolve data.universe_rule into a concrete PIT pool + member list.
+
+    Runs at EXECUTION time (after the user confirmed the plan), never at
+    parse time — a first build fetches per-symbol history over the network
+    and can take minutes. The resolved pool id and members are written back
+    into the spec, so the task.yaml that memorize() persists records what
+    was actually traded (plus the rule itself, for reproducibility).
+    """
+    import datetime as _dt
+
+    from ..data_sources import universe_builder
+    from ..data_sources.constituents import pool_symbols
+
+    raw = ctx.spec.data.universe_rule
+    assert raw, "build_universe requires data.universe_rule"
+    raw = dict(raw)
+    raw.setdefault("start", ctx.spec.data.start or "2018-01-01")
+    rule = universe_builder.UniverseRule.from_dict(raw)
+    end = ctx.spec.data.end or _dt.date.today().isoformat()
+    pool_id = universe_builder.build_pool(rule, end)
+    members = pool_symbols(pool_id, rule.start, end)
+    if not members:
+        raise universe_builder.UniverseRuleError(
+            f"universe rule produced no members over {rule.start}..{end} — "
+            "the filters may be too strict for this period"
+        )
+    ctx.spec.data.universe = pool_id
+    ctx.spec.data.symbols = members
+    ctx.spec.validate()
+    ctx.gate_notes.append(
+        universe_builder.describe_rule(
+            rule, pool_id, universe_builder.member_count(pool_id),
+            ctx.spec.report.language,
+        )
+    )
+
+
 @register("load_data")
 def load_data(ctx: RunContext) -> None:
     ctx.data = data_mod.load(ctx.spec.data)

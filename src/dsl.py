@@ -37,6 +37,12 @@ class DataSpec:
     path: Optional[str] = None  # for csv source
     seed: int = 42  # for synthetic source
     adjust: str = "qfq"  # for akshare source
+    # declarative rule for building the universe at EXECUTION time (the
+    # planner inserts a build_universe step; parsing only validates it).
+    # Shape is universe_builder.UniverseRule's dict form; while set,
+    # `symbols` is a placeholder the build step overwrites with the real
+    # members and `universe` gets the built pool id.
+    universe_rule: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -187,7 +193,9 @@ class TaskSpec:
         if self.kind == "factor":
             if not self.factor.expressions:
                 raise DSLError("kind=factor requires factor.expressions")
-            if len(self.data.symbols) < 2:
+            if len(self.data.symbols) < 2 and not self.data.universe_rule:
+                # with a universe_rule the symbols are a placeholder until
+                # the build_universe step resolves the real members
                 raise DSLError(
                     "factor research needs >= 2 symbols for cross-sectional "
                     "analysis (5+ recommended)"

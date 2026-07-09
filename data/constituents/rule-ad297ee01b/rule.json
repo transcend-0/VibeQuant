@@ -1,0 +1,34 @@
+{
+  "rule": {
+    "asset_type": "etf",
+    "base_pool": "all_etf",
+    "rebalance": {
+      "freq": "daily"
+    },
+    "filters": [
+      {
+        "type": "exclude_leveraged"
+      },
+      {
+        "type": "exclude_inverse"
+      },
+      {
+        "type": "min_listing_days",
+        "days": 60
+      },
+      {
+        "type": "exclude_zero_turnover"
+      },
+      {
+        "type": "turnover_percentile",
+        "top_pct": 0.8
+      }
+    ],
+    "start": "2018-01-01",
+    "end": null
+  },
+  "pool_id": "rule-ad297ee01b",
+  "covered_end": "2025-12-31",
+  "built_at": "2026-07-09T15:22:50",
+  "member_rows": 28222
+}

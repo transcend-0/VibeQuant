@@ -9,7 +9,7 @@ from __future__ import annotations
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .config import workspace_dir
 from .dsl import TaskSpec
@@ -62,14 +62,38 @@ class RunResult:
         }
 
 
-def run_task(spec: TaskSpec, workspace: Optional[Path] = None) -> RunResult:
+def run_task(
+    spec: TaskSpec,
+    workspace: Optional[Path] = None,
+    on_step: Optional[Callable[[int, int, Any], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> RunResult:
+    """Execute the plan. `on_step(i, n, step)` fires before each step —
+    progress feedback for UIs; callback errors never break the run.
+    `should_stop()` is checked between steps: True aborts the run as a
+    normal persisted failure ("cancelled by user"). In-step network
+    downloads additionally honour market.CANCEL_EVENT, so a cancel takes
+    effect within ~one request rather than at the end of a long fetch loop."""
     spec.validate()
     store = MemoryStore(workspace or workspace_dir())
     run = store.new_run(spec.name)
     plan = make_plan(spec)
     ctx = RunContext(spec=spec, store=store, run=run)
 
-    for step in plan.steps:
+    for i, step in enumerate(plan.steps, 1):
+        if should_stop is not None and should_stop():
+            store.save_artifact(run, "task.yaml", spec.to_yaml())
+            store.save_artifact(run, "error.txt", f"step: {step.tool}\ncancelled by user\n")
+            return RunResult(
+                run_id=run.run_id, ok=False, spec=spec, plan=plan,
+                kind=spec.kind, error="cancelled by user",
+                failed_step=step.tool, artifacts=dict(ctx.artifacts),
+            )
+        if on_step is not None:
+            try:
+                on_step(i, len(plan.steps), step)
+            except Exception:  # noqa: S110 -- progress display must never kill a run
+                pass
         try:
             get_tool(step.tool)(ctx)
         except Exception as exc:

@@ -25,6 +25,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
+import yaml
+
+from .data_sources import universe_builder
 from .dsl import DSLError, TaskSpec
 from .llm import LLMError, get_client, query_structured
 from .research.llm_ideas import _FUNCTION_CATALOG
@@ -74,6 +77,40 @@ DSL rules you must respect:
   leading-zero number is parsed as octal by YAML and silently corrupts the
   code. If data.universe is "pool24", just put ["DEMO"] here — the caller
   overwrites it with the real 24-ETF list, don't try to guess the codes.
+  Same when you set data.universe_rule (a rule replaces a fixed symbol
+  list): put ["DEMO"] here and set data.universe to "custom".
+- data.universe_rule: OPTIONAL. Set it (instead of a fixed symbol list)
+  when the request describes a PROCEDURAL/DYNAMIC rule for selecting the
+  tradeable universe (e.g. "daily pick ETFs covering the top 80% of
+  turnover, excluding leveraged/inverse/newly-listed/suspended names") —
+  as opposed to naming explicit tickers or asking for a built-in preset.
+  The system does NOT build the pool during this parse: it validates the
+  rule, shows it in the plan, and builds only after the user confirms.
+  Only "etf" rules are implemented today; if the request clearly wants a
+  rule-based STOCK universe (fundamental screens like ROE/cash-flow/
+  debt-ratio, ST exclusion), still emit your best-effort universe_rule —
+  the caller surfaces a clear "not yet supported" error rather than you
+  silently dropping the requirement. Shape:
+    universe_rule:
+      asset_type: "etf"
+      base_pool: "all_etf"
+      rebalance: {{"freq": "daily"}} or {{"freq": "annual", "month": 5, "day": 1}}
+        (month/day = calendar anchor; resolved to that year's first
+        trading day on/after the anchor)
+      start: "YYYY-MM-DD"  (when the membership history should begin;
+        usually the same as data.start)
+      filters: ordered pipeline, each step narrows the previous step's
+        survivors. Every entry is a mapping with a "type" key plus the
+        type's params INLINE at the same level — e.g.
+          filters:
+            - type: "exclude_leveraged"
+            - type: "min_listing_days"
+              days: 60
+            - type: "turnover_percentile"
+              top_pct: 0.8
+        (NOT {{"turnover_percentile": {{"top_pct": 0.8}}}} — the type name
+        is a value, never a key). Use ONLY these types, never invent one:
+  {rule_catalog}
 - data.start/end: "YYYY-MM-DD". Resolve relative ranges ("past 3 years",
   "近5年") against today's date, given below. If nothing is stated or
   implied, default to start="2025-01-01", end="2025-12-31".
@@ -250,8 +287,22 @@ def _parse_task(reply: str) -> Dict[str, Any]:
         raise ValueError(f"reply was not valid JSON: {exc}") from exc
     if not isinstance(payload, dict) or not payload.get("task_yaml"):
         raise ValueError("reply JSON must be an object with a non-empty 'task_yaml' field")
+
     try:
-        spec = TaskSpec.from_yaml(str(payload["task_yaml"]))
+        raw = yaml.safe_load(str(payload["task_yaml"])) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"task_yaml failed DSL validation: invalid YAML: {exc}") from exc
+    # canonical placement is data.universe_rule (a real DSL field), but the
+    # model may also put it at the reply-envelope level next to task_yaml
+    # (an earlier prompt revision asked for exactly that) -- accept both
+    # rather than burning retries on placement.
+    if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
+        envelope_rule = payload.get("universe_rule")
+        if envelope_rule and not raw["data"].get("universe_rule"):
+            raw["data"]["universe_rule"] = envelope_rule
+
+    try:
+        spec = TaskSpec.from_dict(raw)
     except DSLError as exc:
         raise ValueError(f"task_yaml failed DSL validation: {exc}") from exc
 
@@ -264,6 +315,30 @@ def _parse_task(reply: str) -> Dict[str, Any]:
         validate_strategy_params(spec.strategy.params)
     except StrategySourceError as exc:
         raise ValueError(str(exc)) from exc
+
+    # universe_rule is VALIDATED here -- through the same self-correcting
+    # retry loop: an unknown/unsupported filter type raises, query_structured
+    # feeds the message back, and the model either fixes it or the parse
+    # fails loudly -- but NOT built. Building fetches per-symbol history
+    # over the network and belongs to execution, after the user has seen
+    # and confirmed the plan (Plan-and-Act); the planner inserts a
+    # build_universe step for it.
+    if spec.data.universe_rule:
+        rule_raw = dict(spec.data.universe_rule)
+        # the model sometimes treats data.start as already covering the
+        # rule's start (understandably, both live in the same reply) and
+        # omits it -- default from the task's own data.start rather than
+        # rejecting an otherwise-fine rule over one derivable field.
+        rule_raw.setdefault("start", spec.data.start)
+        try:
+            rule_obj = universe_builder.UniverseRule.from_dict(rule_raw)
+        except universe_builder.UniverseRuleError as exc:
+            raise ValueError(f"universe_rule invalid: {exc}") from exc
+        payload["_universe_rule"] = rule_obj
+        # store the CANONICAL form (filter shapes normalized, params typed,
+        # start filled), not whatever shape the model happened to emit --
+        # this is what task.yaml persists and what build_universe re-parses
+        spec.data.universe_rule = rule_obj.to_dict()
 
     payload["_spec"] = spec
     return payload
@@ -280,6 +355,7 @@ def parse_prompt(prompt: str) -> ParseResult:
 
     system_prompt = _SYSTEM_TEMPLATE.format(
         func_catalog=_FUNCTION_CATALOG,
+        rule_catalog=universe_builder.filter_catalog_prompt(),
         today=_dt.date.today().isoformat(),
     )
     try:
@@ -310,5 +386,22 @@ def parse_prompt(prompt: str) -> ParseResult:
             "已选用精选24ETF池作为标的池。" if spec.report.language == "zh"
             else "Using the curated 24-ETF pool as the universe."
         )
+
+    rule = payload.get("_universe_rule")
+    if rule is not None:
+        # analysis only proposes; execution builds (Plan-and-Act). The rule
+        # is validated and recorded in the spec, the plan the user is about
+        # to confirm carries a build_universe step, and only after that
+        # confirmation does the runner fetch data and construct the pool.
+        spec.data.source = "etf"
+        spec.data.universe = rule.pool_id()  # deterministic from content, no build needed
+        spec.validate()
+        end = spec.data.end or _dt.date.today().isoformat()
+        clarifications.append(
+            universe_builder.describe_rule(
+                rule, rule.pool_id(), None, spec.report.language, end=end,
+            )
+        )
+
     recognized = bool(payload.get("recognized", True))
     return ParseResult(spec=spec, clarifications=clarifications, recognized=recognized)

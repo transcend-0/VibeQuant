@@ -260,13 +260,13 @@ def test_ingest_wechat_link_gives_actionable_error(monkeypatch):
 def test_extract_universe_hint_pool24(fake_llm):
     client = fake_llm(lambda user, system: '{"universe": "pool24"}')
     hint = extract_universe_hint("在精选24ETF上构建策略", client)
-    assert hint is not None and len(hint) == 24
+    assert hint is not None and hint.rule is None and len(hint.symbols) == 24
 
 
 def test_extract_universe_hint_explicit_symbols(fake_llm):
     client = fake_llm(lambda user, system: '{"symbols": ["600519", "600036"]}')
     hint = extract_universe_hint("只用600519和600036这两只股票", client)
-    assert hint == ["600519", "600036"]
+    assert hint.symbols == ["600519", "600036"] and hint.rule is None
 
 
 def test_extract_universe_hint_none_when_unspecified(fake_llm):

@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -33,6 +34,7 @@ from pydantic import BaseModel
 
 from src import live as live_mod
 from src.config import raw_data_dir, workspace_dir
+from src.data_sources import market as market_mod
 from src.dsl import DSLError, TaskSpec
 from src.factors.registry import list_factors
 from src.intent import IntentError, parse_prompt
@@ -44,6 +46,7 @@ from src.research.ingest import Idea, IngestError
 from src.research.llm_ideas import IdeaExtractionError, llm_extract_ideas
 from src.research.tasks import (
     DEFAULT_ETF_UNIVERSE,
+    UniverseHint,
     extract_universe_hint,
     idea_to_taskspec,
 )
@@ -57,6 +60,46 @@ app = FastAPI(title="VibeQuant", version="0.3.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 _run_lock = asyncio.Lock()  # one engine run at a time keeps the box responsive
+
+# live progress of the (single) engine run for the UI to poll: with one
+# run at a time (_run_lock) a plain module dict is race-free enough --
+# the callback runs in the worker thread, readers only ever see a
+# complete replacement dict.
+_run_status: Dict[str, Any] = {"active": False}
+
+# cooperative cancellation: /api/run_cancel sets this; the runner checks it
+# between plan steps and every throttled market request checks it in-flight
+# (threads can't be killed, so long downloads need their own checkpoint)
+_run_cancel = threading.Event()
+market_mod.CANCEL_EVENT = _run_cancel
+
+
+def _status_step(i: int, n: int, step) -> None:
+    global _run_status
+    _run_status = {
+        "active": True,
+        "step": step.tool,
+        "i": i,
+        "n": n,
+        "title_en": step.title_en,
+        "title_zh": step.title_zh,
+    }
+
+
+def _status_begin(title_en: str, title_zh: str) -> None:
+    """Mark an engine operation active before its first plan step (so the
+    LLM-reflection phase of auto-optimize is visible and cancellable too)."""
+    global _run_status
+    _run_cancel.clear()  # a stale cancel from a finished op must not kill this one
+    _run_status = {
+        "active": True, "step": "start", "i": 0, "n": 0,
+        "title_en": title_en, "title_zh": title_zh,
+    }
+
+
+def _status_clear() -> None:
+    global _run_status
+    _run_status = {"active": False}
 
 
 # ------------------------------------------------- deployment scheduler
@@ -218,14 +261,15 @@ def _plan_payload(spec: TaskSpec) -> List[Dict[str, str]]:
     ]
 
 
-def _brief_payload(brief, req_mode: str, universe, start, end, language):
+def _brief_payload(brief, req_mode: str, hint: Optional[UniverseHint], start, end, language):
     """Brief + a ready-to-run task suggestion per extracted idea."""
 
     def _build(idea, mode, intent):
         return idea_to_taskspec(
             idea,
             mode=mode,
-            universe=universe,
+            universe=hint.symbols if hint else None,
+            universe_rule=hint.rule if hint else None,
             start=start or "2025-01-01",
             end=end or "2025-12-31",
             language=language,
@@ -357,13 +401,16 @@ def parse(req: ParseRequest) -> Dict[str, Any]:
     }
 
 
-async def _llm_ideas(brief) -> Optional[List[str]]:
+async def _llm_ideas(brief, start: str = "2025-01-01", end: str = "2025-12-31") -> Optional[UniverseHint]:
     """Extract candidate ideas from the brief's text via the LLM (required).
 
-    Also derives a universe/symbols override from any accompanying user
-    instruction (e.g. "只用600519和600036" typed alongside a pasted paper
-    link) — returns that hint (None if the instruction named nothing
-    specific), so the caller can prefer it over its own default.
+    Also derives a universe/symbols/rule override from any accompanying user
+    instruction (e.g. "只用600519和600036", or a turnover-percentile universe
+    rule, typed alongside a pasted paper link) — returns that hint (None if
+    the instruction named nothing specific), so the caller can prefer it
+    over its own default. A rule-based hint triggers the same deterministic
+    build as the direct-instruction /api/parse path (universe_builder),
+    just keyed off `start`/`end` from this request instead of the task spec.
     """
     client = get_client()
     if client is None:
@@ -386,11 +433,12 @@ async def _llm_ideas(brief) -> Optional[List[str]]:
     universe_hint = None
     if brief.user_instruction:
         universe_hint = await asyncio.to_thread(
-            extract_universe_hint, brief.user_instruction, client
+            extract_universe_hint, brief.user_instruction, client, start, end,
         )
         if universe_hint:
             brief.notes.append(
-                f"universe set from your instruction ({len(universe_hint)} symbols)"
+                universe_hint.note or
+                f"universe set from your instruction ({len(universe_hint.symbols or [])} symbols)"
             )
     return universe_hint
 
@@ -405,11 +453,11 @@ async def ingest(req: IngestRequest) -> Dict[str, Any]:
         raise HTTPException(
             status_code=502, detail=f"failed to fetch source: {exc}"
         ) from exc
-    universe_hint = await _llm_ideas(brief)
-    return _brief_payload(
-        brief, req.mode, req.universe or universe_hint, req.start, req.end,
-        req.language,
+    universe_hint = await _llm_ideas(
+        brief, req.start or "2025-01-01", req.end or "2025-12-31"
     )
+    hint = UniverseHint(symbols=req.universe) if req.universe else universe_hint
+    return _brief_payload(brief, req.mode, hint, req.start, req.end, req.language)
 
 
 @app.post("/api/ingest_pdf")
@@ -432,7 +480,7 @@ async def ingest_pdf(
         )
     except IngestError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    universe_hint = await _llm_ideas(brief)
+    universe_hint = await _llm_ideas(brief, start, end)
     return _brief_payload(brief, mode, universe_hint, start, end, language)
 
 
@@ -440,7 +488,13 @@ async def ingest_pdf(
 async def run(req: RunRequest) -> Dict[str, Any]:
     spec = _spec_from_request(req)
     async with _run_lock:
-        result = await asyncio.to_thread(run_task, spec)
+        _status_begin("starting…", "启动中…")
+        try:
+            result = await asyncio.to_thread(
+                run_task, spec, None, _status_step, _run_cancel.is_set
+            )
+        finally:
+            _status_clear()
     payload = result.to_dict()
     payload["report_markdown"] = result.report_markdown
     detail = MemoryStore(workspace_dir()).load_run(result.run_id) or {}
@@ -449,9 +503,31 @@ async def run(req: RunRequest) -> Dict[str, Any]:
     return payload
 
 
+@app.get("/api/run_status")
+def run_status() -> Dict[str, Any]:
+    """Current engine-run step, for the UI's progress display."""
+    return _run_status
+
+
+@app.post("/api/run_cancel")
+def run_cancel() -> Dict[str, Any]:
+    """Request cooperative cancellation of the active engine operation."""
+    if not _run_status.get("active"):
+        return {"cancelling": False}
+    _run_cancel.set()
+    return {"cancelling": True}
+
+
 @app.get("/api/runs")
-def runs(limit: int = 50) -> List[Dict[str, Any]]:
-    return MemoryStore(workspace_dir()).list_runs(limit=limit)
+def runs(limit: int = 50, kind: Optional[str] = None) -> List[Dict[str, Any]]:
+    """History entries, newest first. `kind` filters BEFORE the limit is
+    applied — otherwise a burst of factor auto-iterations (dozens of runs
+    in minutes) pushes every strategy run out of the fetched window and
+    the strategy tab looks like those runs vanished."""
+    entries = MemoryStore(workspace_dir()).list_runs(limit=10_000)
+    if kind in ("strategy", "factor"):
+        entries = [e for e in entries if (e.get("kind") or "strategy") == kind]
+    return entries[:limit]
 
 
 @app.get("/api/runs/{run_id}")
@@ -868,9 +944,14 @@ async def auto_optimize_endpoint(req: AutoOptimizeRequest) -> Dict[str, Any]:
 
     try:
         async with _run_lock:
-            return await asyncio.to_thread(
-                auto_optimize, req.yaml_text, req.result_summary, req.language
-            )
+            _status_begin("AI reflecting on the last result…", "AI 反思上次结果并修订中…")
+            try:
+                return await asyncio.to_thread(
+                    auto_optimize, req.yaml_text, req.result_summary,
+                    req.language, None, _status_step, _run_cancel.is_set,
+                )
+            finally:
+                _status_clear()
     except DSLError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except LLMError as exc:

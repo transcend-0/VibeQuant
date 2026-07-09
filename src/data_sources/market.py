@@ -38,12 +38,29 @@ class MarketDataError(RuntimeError):
     pass
 
 
+class FetchCancelled(RuntimeError):
+    """A host UI cancelled the operation mid-download.
+
+    Deliberately NOT a MarketDataError: the per-symbol/per-source fallback
+    machinery swallows MarketDataError and moves on to the next candidate,
+    which is exactly wrong for a user-initiated abort — this must
+    propagate all the way out of the fetch loops.
+    """
+
+
+# optional threading.Event installed by a host UI (webui/server.py): every
+# throttled network request checks it, so cancelling aborts a multi-minute
+# per-symbol download loop within ~one request instead of at its end
+CANCEL_EVENT = None
+
 _UA = "Mozilla/5.0 (X11; Linux x86_64) VibeQuant/0.3"
 _MIN_INTERVAL = 1.0
 _last_call: Dict[str, float] = {}
 
 
 def _throttled_json(host_key: str, url: str, headers: Optional[Dict] = None):
+    if CANCEL_EVENT is not None and CANCEL_EVENT.is_set():
+        raise FetchCancelled("cancelled by user")
     wait = _last_call.get(host_key, 0.0) + _MIN_INTERVAL - time.monotonic()
     if wait > 0:
         time.sleep(wait)
@@ -384,6 +401,8 @@ def fetch_daily(
     for name, fetcher in chain:
         try:
             df = _paged(fetcher, code, tag, start, end)
+        except FetchCancelled:
+            raise  # user abort: never "try the next source"
         except Exception as exc:
             errors.append(f"{name}: {exc}")
             continue
@@ -432,6 +451,8 @@ def fetch_all_etf_list(
                     f"https://{host}.eastmoney.com/api/qt/clist/get?{params}",
                 )
                 break
+            except FetchCancelled:
+                raise
             except Exception:
                 continue
         diff = ((payload or {}).get("data") or {}).get("diff") or []
@@ -468,6 +489,8 @@ def _sina_etf_list() -> List[Dict[str, str]]:
         "Market_Center.getHQNodeData?num=80&sort=amount&asc=0&node=etf_hq_fund&page="
     )
     for page in range(1, 26):  # 25 * 80 covers the ~1600-ETF directory
+        if CANCEL_EVENT is not None and CANCEL_EVENT.is_set():
+            raise FetchCancelled("cancelled by user")
         wait = _last_call.get("sina", 0.0) + _MIN_INTERVAL - time.monotonic()
         if wait > 0:
             time.sleep(wait)

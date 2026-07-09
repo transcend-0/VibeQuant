@@ -82,7 +82,7 @@ def test_auto_optimize_runs_exactly_once(monkeypatch):
     )
     run_calls = []
 
-    def fake_run_task(spec, workspace=None):
+    def fake_run_task(spec, workspace=None, on_step=None, should_stop=None):
         run_calls.append(spec.name)
         from src.runner import RunResult
         return RunResult(

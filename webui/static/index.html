@@ -212,7 +212,8 @@ details > summary { cursor: pointer; }
     </div>
     <div style="margin-top:10px">
       <label class="small" data-i18n="s_code"></label>
-      <textarea class="code" id="stratSource" spellcheck="false" style="min-height:260px"></textarea>
+      <div class="sig foldview editable" id="stratSource" contenteditable="true"
+        spellcheck="false" style="min-height:260px"></div>
     </div>
     <div class="row">
       <button class="primary" id="stratBuildBtn" data-i18n="build_btn"></button>
@@ -270,7 +271,7 @@ details > summary { cursor: pointer; }
     </div>
   </div>
 
-  <div id="planCard" style="display:none; margin-top:14px; padding-top:14px; border-top:1px solid var(--border)">
+  <div class="card" id="planCard" style="display:none">
     <h2 data-i18n="plan_title"></h2>
     <div id="clarifications"></div>
     <ol class="plan" id="planList"></ol>
@@ -423,7 +424,7 @@ const I18N = {
     f_neut: "Neutralization", f_decay: "Decay (days)", f_trunc: "Truncation (per tail)",
     f_forward: "Forward days", f_quant: "Quantiles",
     builder_start: "Start", builder_end: "End",
-    build_btn: "Build task", build_hint: "assembles the YAML below",
+    build_btn: "Build task", build_hint: "updates the task YAML above",
     plan_title: "2 · Review the plan", yaml_title: "Task DSL (editable)",
     run_btn: "Run", running: "working…",
     deploy_from_task: "Deploy…",
@@ -473,8 +474,11 @@ const I18N = {
     llm_on: "LLM: connected", llm_off: "LLM: not configured",
     email_title: "Signal email (optional)",
     email_explain: "Create config/email.yaml from config/email.example.yaml (SMTP host, account, auth code). Deployments email through it; without it they archive to files.",
-    f_market: "Market", auto_btn: "Agent auto-optimize",
-    auto_hist: "Agent iteration", auto_obj: "objective",
+    f_market: "Market", auto_btn: "AI auto-optimize",
+    auto_hist: "AI iteration", auto_obj: "objective",
+    stop_btn: "Stop", stopped_msg: "Stopped.",
+    uni_rule_opt: "Rule-built universe (auto)",
+    uni_rule_syms: "(members resolved at run time by the universe rule)",
     auto_best: "revised task loaded into the editor",
     sbuilder_title: "Strategy workbench",
     s_universe: "Universe", s_template: "Strategy template",
@@ -514,7 +518,7 @@ const I18N = {
     f_neut: "中性化 Neutralization", f_decay: "衰减 Decay（日）", f_trunc: "截断 Truncation（每尾）",
     f_forward: "前瞻天数", f_quant: "分层数",
     builder_start: "开始", builder_end: "结束",
-    build_btn: "生成任务", build_hint: "生成下方 YAML",
+    build_btn: "生成任务", build_hint: "更新上方任务 YAML",
     plan_title: "2 · 确认计划", yaml_title: "任务 DSL（可编辑）",
     run_btn: "运行", running: "运行中…",
     deploy_from_task: "部署…",
@@ -565,6 +569,9 @@ const I18N = {
     email_explain: "参考 config/email.example.yaml 创建 config/email.yaml（SMTP 服务器、账号、授权码）。配置后部署会自动发信，否则信号存档为文件。",
     f_market: "市场 Market", auto_btn: "AI 自动优化",
     auto_hist: "AI 优化结果", auto_obj: "目标值",
+    stop_btn: "停止", stopped_msg: "已停止。",
+    uni_rule_opt: "规则Universe（自动构建）",
+    uni_rule_syms: "（成员由 Universe 规则在运行时确定）",
     auto_best: "修订后的任务已载入任务编辑器",
     sbuilder_title: "策略工作台",
     s_universe: "标的池 Universe", s_template: "策略模板",
@@ -620,8 +627,11 @@ let modeState = {
   factor: { brief: null, task: null },
 };
 
+let currentAbort = null; // set by withSpin so its Stop button can cut requests
 async function api(path, opts) {
-  const res = await fetch(path, opts);
+  const merged = { ...(opts || {}) };
+  if (currentAbort && !merged.signal) merged.signal = currentAbort.signal;
+  const res = await fetch(path, merged);
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch (e) {}
@@ -631,6 +641,15 @@ async function api(path, opts) {
 }
 const postJson = (p, body) => api(p, { method: "POST",
   headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
+let runStepLabel = ""; // current engine step ("3/8 · 加载行情…"), "" when idle
+async function pollRunStatus() {
+  try {
+    const s = await api("/api/run_status");
+    runStepLabel = s.active
+      ? `${s.i}/${s.n} · ${lang === "zh" ? s.title_zh : s.title_en}`
+      : "";
+  } catch (e) { runStepLabel = ""; }
+}
 async function withSpin(btnId, spinId, errId, fn) {
   $(btnId).disabled = true;
   const spin = $(spinId);
@@ -638,14 +657,44 @@ async function withSpin(btnId, spinId, errId, fn) {
   spin.style.display = "inline";      // run for minutes on a real PDF, so
   const t0 = Date.now();               // show elapsed time, not just a static spinner
   const tick = () => {
-    spin.textContent = `${baseLabel} (${Math.floor((Date.now() - t0) / 1000)}s)`;
+    const secs = Math.floor((Date.now() - t0) / 1000);
+    // while the engine executes a run, show which plan step it is on
+    // (build universe / load data / backtest / ...) instead of a mute timer
+    spin.textContent = runStepLabel
+      ? `${runStepLabel} (${secs}s)`
+      : `${baseLabel} (${secs}s)`;
   };
   tick();
   const timer = setInterval(tick, 1000);
+  const statusTimer = setInterval(pollRunStatus, 1000);
   if (errId) $(errId).textContent = "";
-  try { await fn(); } catch (e) { if (errId) $(errId).textContent = e.message; }
+  // Stop: aborts the awaited request (UI unblocks at once) and asks the
+  // server to cancel the engine run cooperatively (threads can't be
+  // killed; it stops between plan steps / mid-download at the next
+  // network request). LLM-only calls (parse/ingest) have no server-side
+  // cancel — aborting just stops waiting, which is what matters here.
+  currentAbort = new AbortController();
+  const ctrl = currentAbort;
+  const stopBtn = document.createElement("button");
+  stopBtn.textContent = T().stop_btn;
+  stopBtn.className = "danger";
+  stopBtn.style.cssText = "margin-left:8px;padding:1px 10px;font-size:12px";
+  spin.after(stopBtn);
+  stopBtn.onclick = () => {
+    stopBtn.disabled = true;
+    fetch("/api/run_cancel", { method: "POST" }).catch(() => {});
+    ctrl.abort();
+  };
+  try { await fn(); }
+  catch (e) {
+    if (errId) $(errId).textContent = e.name === "AbortError" ? T().stopped_msg : e.message;
+  }
   finally {
     clearInterval(timer);
+    clearInterval(statusTimer);
+    runStepLabel = "";
+    if (currentAbort === ctrl) currentAbort = null;
+    stopBtn.remove();
     spin.textContent = baseLabel;
     $(btnId).disabled = false; spin.style.display = "none";
   }
@@ -668,10 +717,11 @@ function applyChrome() {
   if (research) {
     $("builderCard").style.display = view === "factor" ? "" : "none";
     $("strategyBuilderCard").style.display = view === "strategy" ? "" : "none";
-    // "确认计划" lives inside whichever workbench matches the current mode,
-    // so editing workbench fields and confirming the plan feel like one
-    // continuous flow instead of two separate cards.
-    (view === "factor" ? $("builderCard") : $("strategyBuilderCard")).appendChild($("planCard"));
+    // "确认计划" sits directly ABOVE whichever workbench matches the current
+    // mode: the plan is the decision point (analysis proposes, the user
+    // confirms), so it leads; the workbench below is where to tweak first.
+    const wb = view === "factor" ? $("builderCard") : $("strategyBuilderCard");
+    wb.parentNode.insertBefore($("planCard"), wb);
     $("sourceInput").placeholder = (T()["ex_" + view] || [""])[0] || "";
     $("refineInput").placeholder = T().refine_ph || "";
     renderExamples();
@@ -864,8 +914,12 @@ async function syncUniverse(which) {
   const ids = _ids(which);
   const mk = currentMarket(which);
   if (!mk) return;
+  const isRule = ($(ids.uni).value || "").startsWith("rule-");
+  $(ids.syms).disabled = isRule;
+  if (isRule) { $(ids.syms).value = T().uni_rule_syms; return; }
   const u = mk.universes.find(x => x.key === $(ids.uni).value);
   if (!u) return;
+  if ($(ids.syms).value === T().uni_rule_syms) $(ids.syms).value = "";
   if (u.dynamic) {
     $(ids.syms).value = "…";
     try {
@@ -992,6 +1046,40 @@ function yamlParamValue(v, contIndent) {
   }
   return JSON.stringify(s); // double-quoted YAML string syntax
 }
+// rule-built universes: the workbench keeps the analysed task's
+// universe_rule per mode so rebuilding from workbench fields carries the
+// rule through to the regenerated YAML instead of silently dropping it
+let wbUniverseRule = { strat: null, factor: null };
+
+function yamlBlock(v, indent) {
+  // minimal object->YAML emitter, enough for the universe_rule shape
+  // (nested dicts, lists of dicts, JSON scalars)
+  const pad = " ".repeat(indent);
+  if (Array.isArray(v)) {
+    return v.map(item => {
+      const lines = yamlBlock(item, indent + 2).split("\n");
+      return pad + "- " + lines[0].trimStart() +
+        (lines.length > 1 ? "\n" + lines.slice(1).join("\n") : "");
+    }).join("\n");
+  }
+  if (v && typeof v === "object") {
+    return Object.entries(v)
+      .filter(([, val]) => val !== null && val !== undefined)
+      .map(([k, val]) =>
+        (val && typeof val === "object")
+          ? `${pad}${k}:\n${yamlBlock(val, indent + 2)}`
+          : `${pad}${k}: ${JSON.stringify(val)}`)
+      .join("\n");
+  }
+  return pad + JSON.stringify(v);
+}
+
+function wbRuleFor(which) {
+  const ids = _ids(which);
+  return ($(ids.uni).value || "").startsWith("rule-")
+    ? wbUniverseRule[which === "factor" ? "factor" : "strat"] : null;
+}
+
 $("stratBuildBtn").onclick = () => {
   const g = stratTemplateGroup();
   const params = { source: $("stratSource").value };
@@ -1001,7 +1089,11 @@ $("stratBuildBtn").onclick = () => {
     const exprs = $("stratExprs").value.split("\n").map(s => s.trim()).filter(Boolean);
     if (exprs.length) params.expressions = exprs;
   }
-  const symbols = $("stratSymbols").value.split(/[,，\s]+/).filter(Boolean);
+  const rule = wbRuleFor("strat");
+  // with a rule the members are resolved by the build_universe step at
+  // run time; "DEMO" is the documented placeholder the runner overwrites
+  const symbols = rule ? ["DEMO"]
+    : $("stratSymbols").value.split(/[,，\s]+/).filter(Boolean);
   if (!symbols.length) return;
   const paramLines = Object.entries(params).map(([k, v]) =>
     `    ${k}: ${yamlParamValue(v, 6)}`);
@@ -1015,6 +1107,7 @@ $("stratBuildBtn").onclick = () => {
     "  symbols: [" + symbols.map(x => `"${x}"`).join(", ") + "]",
     `  start: "${$("stratStart").value}"`,
     `  end: "${$("stratEnd").value}"`,
+    ...(rule ? ["  universe_rule:", yamlBlock(rule, 4)] : []),
     "strategy:",
     `  name: ${g.real}`,
     ...(paramLines.length ? ["  params:", ...paramLines] : []),
@@ -1113,7 +1206,9 @@ function renderBrief(brief) {
 $("buildBtn").onclick = () => {
   const exprs = $("factorExprs").value.split("\n").map(s => s.trim()).filter(Boolean);
   if (!exprs.length) return;
-  const universe = $("universeInput").value.split(/[,，\s]+/).filter(Boolean);
+  const rule = wbRuleFor("factor");
+  const universe = rule ? ["DEMO"]
+    : $("universeInput").value.split(/[,，\s]+/).filter(Boolean);
   const yaml = [
     "name: factor-study", "kind: factor",
     `intent: "built with the factor workbench"`,
@@ -1121,6 +1216,7 @@ $("buildBtn").onclick = () => {
     `  universe: ${$("universeSelect").value}`,
     "  symbols: [" + universe.map(x => `"${x}"`).join(", ") + "]",
     `  start: "${$("startDate").value}"`, `  end: "${$("endDate").value}"`,
+    ...(rule ? ["  universe_rule:", yamlBlock(rule, 4)] : []),
     "factor:", "  expressions:",
     ...exprs.map(e => `    - "${e.replace(/"/g, "'")}"`),
     `  quantiles: ${parseInt($("quantInput").value) || 4}`,
@@ -1155,6 +1251,8 @@ function syncWorkbenchFromTask(task) {
   if (!marketsCache.length || !task || !task.data) return;
   const which = task.kind === "factor" ? "factor" : "strat";
   const ids = _ids(which);
+  const rule = task.data.universe_rule || null;
+  wbUniverseRule[which] = rule;
   const mk = marketsCache.find(m => m.source === task.data.source) || currentMarket(which);
   if (mk) {
     $(ids.market).value = mk.key;
@@ -1165,10 +1263,24 @@ function syncWorkbenchFromTask(task) {
     }
     $(ids.uni).innerHTML = universes.map(u =>
       `<option value="${esc(u.key)}">${esc(lang === "zh" ? u.label_zh : u.label_en)}</option>`).join("");
-    const uKey = universes.some(u => u.key === task.data.universe) ? task.data.universe : "custom";
-    $(ids.uni).value = uKey;
+    if (rule) {
+      // rule-built pool: not one of the market's presets — inject a
+      // dedicated option so the workbench mirrors what the task will do
+      const opt = document.createElement("option");
+      opt.value = task.data.universe || "rule";
+      opt.textContent = `${T().uni_rule_opt} (${task.data.universe || "rule"})`;
+      $(ids.uni).appendChild(opt);
+      $(ids.uni).value = opt.value;
+    } else {
+      const uKey = universes.some(u => u.key === task.data.universe) ? task.data.universe : "custom";
+      $(ids.uni).value = uKey;
+    }
   }
-  $(ids.syms).value = (task.data.symbols || []).join(", ");
+  // with a rule the symbol list is decided at run time by build_universe;
+  // the input is display-only until the user picks a non-rule universe
+  $(ids.syms).disabled = !!rule;
+  if (rule) $(ids.syms).value = T().uni_rule_syms;
+  else $(ids.syms).value = (task.data.symbols || []).join(", ");
   $(which === "strat" ? "stratStart" : "startDate").value = task.data.start || "";
   $(which === "strat" ? "stratEnd" : "endDate").value = task.data.end || "";
   if (which === "strat" && task.strategy) {
@@ -1631,7 +1743,16 @@ function lineChart(wrap, dates, series, opts = {}) {
 
 /* --------------------------------------------------------- history */
 async function loadHistory() {
-  try { historyCache = await api("/api/runs?limit=30"); } catch (e) { return; }
+  // fetch per kind (server filters BEFORE limiting): a burst of factor
+  // auto-iterations would otherwise crowd every strategy run out of a
+  // single shared window and the strategy tab would look emptied
+  try {
+    const [s, f] = await Promise.all([
+      api("/api/runs?limit=50&kind=strategy"),
+      api("/api/runs?limit=50&kind=factor"),
+    ]);
+    historyCache = s.concat(f);
+  } catch (e) { return; }
   renderHistory();
 }
 function marketLabel(source) {
@@ -1833,7 +1954,7 @@ $("llmTestBtn").onclick = async () => {
   });
 };
 
-/* ------------------------------------------ foldable YAML DSL editor */
+/* --------------------------------------- foldable code/DSL editors */
 // A single contenteditable region (not a plain <textarea>) so folding
 // stays interactive WHILE editing, like a real code editor -- a plain
 // textarea can't hide arbitrary lines at all. Each line is a child
@@ -1849,8 +1970,15 @@ $("llmTestBtn").onclick = async () => {
 // is computed once when a task is freshly loaded, not live per keystroke,
 // since re-rendering the whole structure on every keystroke would reset
 // the cursor position.
-(function setupYamlFoldEditor() {
-  const el = $("yamlEdit");
+//
+// Used for the YAML DSL editor AND the strategy workbench's Python
+// editor: computeFoldRanges is indentation-based, which is exactly how
+// both YAML blocks and Python suites nest (a `def foo():` header over a
+// deeper-indented body folds just like a YAML key over its children).
+// `autoFoldMin`: blocks with at least this many hidden lines start
+// folded; Infinity = everything starts expanded (code editor default).
+function setupFoldEditor(elId, autoFoldMin) {
+  const el = $(elId);
   let rows = [];
 
   function render(text) {
@@ -1861,7 +1989,7 @@ $("llmTestBtn").onclick = async () => {
     // default-fold long blocks (e.g. a 24-symbol list) so a freshly
     // loaded task doesn't dump pages of text before you've even looked.
     const folded = new Set(
-      Object.keys(ranges).map(Number).filter(h => ranges[h] - h - 1 >= 6)
+      Object.keys(ranges).map(Number).filter(h => ranges[h] - h - 1 >= autoFoldMin)
     );
     const hints = [];
     function updateVisibility() {
@@ -1927,7 +2055,9 @@ $("llmTestBtn").onclick = async () => {
     set: v => render(v),
   });
   render("");
-})();
+}
+setupFoldEditor("yamlEdit", 6);
+setupFoldEditor("stratSource", Infinity); // code: everything expanded by default
 
 /* ------------------------------------------------------------ boot */
 loadMarkets();
